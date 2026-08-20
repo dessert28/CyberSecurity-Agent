@@ -1,0 +1,378 @@
+"""Kimi K3 adapter using the provider's OpenAI-compatible HTTP surface."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+from cyber_agent.contracts.common import ErrorCategory, ErrorInfo
+from cyber_agent.contracts.errors import CyberAgentError
+from cyber_agent.contracts.model import (
+    ModelCapabilities,
+    ModelHealth,
+    ModelRequest,
+    ModelResponse,
+    ModelUsage,
+)
+
+from ._schema import JsonSchemaViolation, validate_json_schema
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class KimiK3Config:
+    """Non-secret adapter configuration; the key is referenced by env-var name."""
+
+    base_url: str
+    model: str
+    provider: str = "kimi"
+    api_key_env: str = "KIMI_API_KEY"
+    timeout_seconds: float = 60.0
+    max_retries: int = 2
+    initial_backoff_seconds: float = 0.5
+    reasoning_effort_map: Mapping[str, str] = field(
+        default_factory=lambda: {"low": "low", "high": "high", "max": "high"}
+    )
+    max_context_tokens: int = 262_144
+    strict_schema: bool = True
+
+    def __post_init__(self) -> None:
+        if self.provider != "kimi":
+            raise ValueError("provider must be kimi for KimiK3Config")
+        if not self.base_url.startswith(("https://", "http://")):
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if not self.model.strip():
+            raise ValueError("model must not be empty")
+        if not self.api_key_env or "=" in self.api_key_env:
+            raise ValueError("api_key_env must be an environment variable name")
+        if self.timeout_seconds <= 0 or self.timeout_seconds > 600:
+            raise ValueError("timeout_seconds must be between 0 and 600")
+        if self.max_retries < 0 or self.max_retries > 5:
+            raise ValueError("max_retries must be between 0 and 5")
+        if self.initial_backoff_seconds < 0 or self.initial_backoff_seconds > 60:
+            raise ValueError("initial_backoff_seconds must be between 0 and 60")
+        if set(self.reasoning_effort_map) != {"low", "high", "max"}:
+            raise ValueError("reasoning_effort_map must define low, high, and max")
+        if not all(isinstance(value, str) and value for value in self.reasoning_effort_map.values()):
+            raise ValueError("reasoning effort mappings must be non-empty strings")
+        if not self.strict_schema:
+            raise ValueError("KimiK3Adapter requires strict_schema=true")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, Any]) -> "KimiK3Config":
+        allowed = {
+            "provider",
+            "base_url",
+            "model",
+            "api_key_env",
+            "timeout_seconds",
+            "timeout",
+            "max_retries",
+            "initial_backoff_seconds",
+            "reasoning_effort_map",
+            "max_context_tokens",
+            "strict_schema",
+        }
+        unknown = set(values) - allowed
+        if unknown:
+            raise ValueError(f"unknown Kimi configuration fields: {', '.join(sorted(unknown))}")
+        normalized = dict(values)
+        if "timeout" in normalized:
+            if "timeout_seconds" in normalized:
+                raise ValueError("use only one of timeout or timeout_seconds")
+            normalized["timeout_seconds"] = normalized.pop("timeout")
+        if "base_url" not in normalized or "model" not in normalized:
+            raise ValueError("base_url and model are required")
+        return cls(**normalized)
+
+
+class KimiK3Adapter:
+    """Perform bounded, stateless, strict-schema Kimi K3 calls."""
+
+    def __init__(
+        self,
+        config: KimiK3Config,
+        *,
+        client: httpx.AsyncClient | None = None,
+        environment: Mapping[str, str] | None = None,
+        request_guard: Callable[[], None] | None = None,
+    ) -> None:
+        self._config = config
+        self._environment = os.environ if environment is None else environment
+        self._client = client or httpx.AsyncClient(
+            timeout=config.timeout_seconds,
+            follow_redirects=False,
+            trust_env=False,
+        )
+        self._request_guard = request_guard
+
+    async def generate_structured(self, request: ModelRequest) -> ModelResponse:
+        api_key = self._api_key()
+        if api_key is None:
+            raise _error(
+                "MODEL_API_KEY_MISSING",
+                ErrorCategory.SYSTEM_ERROR,
+                f"The configured API key environment variable {self._config.api_key_env} is not set.",
+            )
+
+        payload = self._payload(request)
+        raw, body, latency_ms = await self._post_with_retries(payload, request, api_key)
+        try:
+            data = _extract_data(body, request.output_schema)
+        except (JsonSchemaViolation, ValueError, KeyError, TypeError):
+            repair_payload = self._repair_payload(request, body)
+            raw, body, repair_latency = await self._post_with_retries(
+                repair_payload, request, api_key
+            )
+            latency_ms += repair_latency
+            try:
+                data = _extract_data(body, request.output_schema)
+            except (JsonSchemaViolation, ValueError, KeyError, TypeError) as exc:
+                raise _error(
+                    "MODEL_SCHEMA_INVALID",
+                    ErrorCategory.MODEL_SCHEMA_INVALID,
+                    "The model response remained invalid after one schema repair attempt.",
+                ) from exc
+
+        usage_data = body.get("usage") or {}
+        prompt_details = usage_data.get("prompt_tokens_details") or {}
+        logger.debug(
+            "Structured model call completed request_id=%s purpose=%s",
+            request.request_id,
+            request.purpose.value,
+        )
+        return ModelResponse(
+            request_id=request.request_id,
+            provider=self._config.provider,
+            model=str(body.get("model") or self._config.model),
+            data=data,
+            usage=ModelUsage(
+                input_tokens=int(usage_data.get("prompt_tokens", 0)),
+                output_tokens=int(usage_data.get("completion_tokens", 0)),
+                cached_input_tokens=int(prompt_details.get("cached_tokens", 0)),
+            ),
+            latency_ms=latency_ms,
+            finish_reason=str(body["choices"][0].get("finish_reason") or "unknown"),
+            provider_request_id=str(body.get("id") or "unknown"),
+            raw_response_hash=hashlib.sha256(raw).hexdigest(),
+            schema_valid=True,
+        )
+
+    async def health_check(self) -> ModelHealth:
+        api_key = self._api_key()
+        if api_key is None:
+            return ModelHealth(
+                available=False,
+                provider=self._config.provider,
+                model=self._config.model,
+                message=(
+                    f"API key environment variable {self._config.api_key_env} is not set."
+                ),
+            )
+        try:
+            self._enforce_request_guard()
+            response = await self._client.get(
+                f"{self._config.base_url.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=self._config.timeout_seconds,
+            )
+            available = response.status_code < 400
+        except (CyberAgentError, httpx.HTTPError):
+            available = False
+        return ModelHealth(
+            available=available,
+            provider=self._config.provider,
+            model=self._config.model,
+            message="available" if available else "model endpoint unavailable",
+        )
+
+    def get_capabilities(self) -> ModelCapabilities:
+        return ModelCapabilities(
+            provider=self._config.provider,
+            model=self._config.model,
+            structured_output=True,
+            vision=False,
+            max_context_tokens=self._config.max_context_tokens,
+        )
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+    def _api_key(self) -> str | None:
+        value = self._environment.get(self._config.api_key_env)
+        return value if value else None
+
+    def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        return {
+            "model": self._config.model,
+            "messages": [
+                {"role": "system", "content": request.system_instructions},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        request.context, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ),
+                },
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": f"{request.purpose.value}_response",
+                    "strict": True,
+                    "schema": request.output_schema,
+                },
+            },
+            "reasoning_effort": self._config.reasoning_effort_map[
+                request.reasoning_effort.value
+            ],
+            "max_tokens": request.max_output_tokens,
+        }
+
+    def _repair_payload(
+        self, request: ModelRequest, invalid_body: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        payload = self._payload(request)
+        invalid_content = _safe_message_content(invalid_body)
+        payload["messages"].extend(
+            [
+                {"role": "assistant", "content": invalid_content},
+                {
+                    "role": "user",
+                    "content": (
+                        "Repair the preceding answer once. Return only a JSON object that "
+                        "satisfies the requested schema; do not add commentary."
+                    ),
+                },
+            ]
+        )
+        return payload
+
+    async def _post_with_retries(
+        self, payload: dict[str, Any], request: ModelRequest, api_key: str
+    ) -> tuple[bytes, dict[str, Any], int]:
+        last_error: CyberAgentError | None = None
+        for attempt in range(self._config.max_retries + 1):
+            started = time.perf_counter()
+            try:
+                self._enforce_request_guard()
+                response = await self._client.post(
+                    f"{self._config.base_url.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=min(request.timeout_seconds, self._config.timeout_seconds),
+                )
+                latency_ms = max(0, int((time.perf_counter() - started) * 1000))
+                if response.status_code == 429:
+                    last_error = _error(
+                        "MODEL_RATE_LIMITED",
+                        ErrorCategory.MODEL_TRANSIENT,
+                        "The model service rate-limited the request.",
+                        retryable=True,
+                    )
+                elif response.status_code >= 500:
+                    last_error = _error(
+                        "MODEL_SERVER_ERROR",
+                        ErrorCategory.MODEL_TRANSIENT,
+                        "The model service returned a temporary server error.",
+                        retryable=True,
+                    )
+                elif response.status_code >= 400:
+                    raise _error(
+                        "MODEL_REQUEST_REJECTED",
+                        ErrorCategory.INPUT_INVALID,
+                        "The model service rejected the request.",
+                    )
+                else:
+                    body = response.json()
+                    if not isinstance(body, dict):
+                        raise ValueError("model response body must be a JSON object")
+                    return response.content, body, latency_ms
+            except httpx.TimeoutException:
+                last_error = _error(
+                    "MODEL_TIMEOUT",
+                    ErrorCategory.MODEL_TRANSIENT,
+                    "The model request timed out.",
+                    retryable=True,
+                )
+            except httpx.TransportError:
+                last_error = _error(
+                    "MODEL_NETWORK_ERROR",
+                    ErrorCategory.MODEL_TRANSIENT,
+                    "The model service could not be reached.",
+                    retryable=True,
+                )
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise _error(
+                    "MODEL_PROTOCOL_ERROR",
+                    ErrorCategory.SYSTEM_ERROR,
+                    "The model service returned an invalid protocol response.",
+                ) from exc
+
+            if attempt < self._config.max_retries:
+                delay = self._config.initial_backoff_seconds * (2**attempt)
+                if delay:
+                    await asyncio.sleep(delay)
+        if last_error is None:
+            raise RuntimeError("model retry loop terminated without an error")
+        raise last_error
+
+    def _enforce_request_guard(self) -> None:
+        if self._request_guard is None:
+            return
+        try:
+            self._request_guard()
+        except CyberAgentError:
+            raise
+        except Exception as exc:
+            raise _error(
+                "MODEL_ENDPOINT_POLICY_DENIED",
+                ErrorCategory.POLICY_DENIED,
+                "The model endpoint no longer satisfies the approved endpoint policy.",
+            ) from exc
+
+
+def _safe_message_content(body: Mapping[str, Any]) -> str:
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return "{}"
+    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+def _extract_data(body: Mapping[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    content = _safe_message_content(body)
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise ValueError("structured model output must be a JSON object")
+    validate_json_schema(parsed, schema)
+    return parsed
+
+
+def _error(
+    code: str,
+    category: ErrorCategory,
+    message: str,
+    *,
+    retryable: bool = False,
+) -> CyberAgentError:
+    return CyberAgentError(
+        ErrorInfo(
+            code=code,
+            category=category,
+            retryable=retryable,
+            safe_message=message,
+        )
+    )

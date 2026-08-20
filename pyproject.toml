@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyber-agent"
+version = "0.1.0"
+description = "Auditable, policy-gated cybersecurity agent runtime"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.128,<1",
+    "httpx>=0.28,<1",
+    "keyring>=25.7,<26",
+    "openai>=1,<3",
+    "pydantic>=2.12,<3",
+    "PyYAML>=6,<7",
+    "uvicorn[standard]>=0.38,<1",
+]
+
+[project.scripts]
+cyber-agent-workbench = "cyber_agent.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4,<9",
+    "pytest-asyncio>=1,<2",
+    "pytest-cov>=7,<8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cyber_agent"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["cyber_agent"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

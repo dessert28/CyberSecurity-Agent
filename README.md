@@ -1,0 +1,105 @@
+# CyberSecurity Agent
+
+CyberSecurity Agent is a local, auditable cybersecurity-agent runtime. It combines a real model gateway, constrained planning, policy gates, controlled tools, verification, evidence, and audit records behind a FastAPI Admin Console and Workbench.
+
+This repository is a source distribution. It does not include credentials, runtime databases, private scenarios, or internal development material.
+
+## Current capability boundary
+
+- Admin Console: available without a configured model so that local model settings and readiness can be inspected.
+- Workbench: available without credentials, but task execution remains unavailable until the model and the selected executor both pass readiness checks.
+- Source Audit: implemented for authorized Python source archives when the model is configured and the isolated source worker is available.
+- Web IDOR: visible as a capability contract, but its executor is not available in this release.
+- Report generation and replanning: unavailable.
+- Production fallback: unavailable. The runtime does not replace an unavailable model or executor with fake or replay behavior.
+
+## Requirements
+
+- Windows 10 or newer
+- Python 3.11, 3.12, or 3.13
+- [uv](https://docs.astral.sh/uv/)
+- Windows Credential Manager for local API-key storage
+
+Docker is not required for the currently available Source Audit path. The optional Docker path setting is reserved for controlled executors that require it.
+
+## Install
+
+From an ordinary PowerShell window in the repository directory:
+
+```powershell
+uv sync --dev --locked
+```
+
+The lock file is part of the release and should not be regenerated during a normal install.
+
+## Start
+
+Open the Admin Console:
+
+```powershell
+uv run python -m cyber_agent.server --admin
+```
+
+Open the Workbench:
+
+```powershell
+uv run python -m cyber_agent.server --workbench
+```
+
+After installation, `start_admin.bat` and `start_workbench.bat` provide equivalent launch shortcuts. They are startup helpers, not dependency installers or one-click deployment tools.
+
+The local server binds only to the loopback interface. The launcher opens a one-time exchange URL and then establishes a local authenticated session.
+
+## Configure a model
+
+1. Start the Admin Console.
+2. Select a provider and enter the model name and API base URL.
+3. Enter your own API key and save the configuration.
+4. Run the connection check. Task execution remains closed unless the required structured-output check succeeds.
+
+The API key is submitted to the local server and stored through Windows Credential Manager. Do not place it in `.env`, `.env.example`, YAML, source code, tests, browser storage, logs, or runtime databases.
+
+The public environment template contains only optional path settings:
+
+```text
+CYBER_AGENT_RUNTIME_ROOT=
+CYBER_AGENT_DOCKER_PATH=
+```
+
+If `CYBER_AGENT_RUNTIME_ROOT` is blank, the application chooses its local default. Keep any configured runtime root outside the repository because it can contain databases and artifacts.
+
+## Verify
+
+Run the public tests after installation:
+
+```powershell
+uv run pytest -p no:cacheprovider
+```
+
+The minimal suite covers imports, server startup wiring, local session boundaries, readiness, source-audit policy checks, and the absence of fake or replay production fallback.
+
+## Repository map
+
+```text
+.
+|-- config/                 Model-provider presets without credentials
+|-- src/cyber_agent/        Runtime, API, planner, gateway, tools, verification
+|-- tests/                  Minimal public smoke and security-boundary tests
+|-- pyproject.toml          Package and dependency declaration
+|-- uv.lock                 Reproducible dependency lock
+|-- start_admin.bat         Installed-environment Admin launcher
+|-- start_workbench.bat     Installed-environment Workbench launcher
+`-- PUBLIC_MANIFEST.txt     Checksums for the other public files
+```
+
+## Release integrity
+
+`PUBLIC_MANIFEST.txt` records a SHA-256 digest and relative path for every other file in the public staging tree. It intentionally does not contain a self-digest, because changing the manifest would invalidate that digest.
+
+## Responsible use
+
+Run the agent only against systems and source material you own or are explicitly authorized to test. Review [SECURITY.md](SECURITY.md) before configuring credentials or runtime storage.
+
+## License status
+
+A public license has not yet been approved. See [LICENSE_PENDING.md](LICENSE_PENDING.md). Do not assume permission beyond applicable law until a final license is published.

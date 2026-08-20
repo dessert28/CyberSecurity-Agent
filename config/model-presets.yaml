@@ -1,0 +1,19 @@
+schema_version: "1.0"
+reviewed_at: "2026-08-05"
+presets:
+  - preset_id: kimi-cn
+    display_name: Kimi 国内
+    provider: kimi
+    base_url: https://api.moonshot.cn/v1
+    model_id: kimi-k3
+    structured_output_mode: json_schema
+    security_default: true
+    source_url: https://platform.kimi.com/docs/api/quickstart
+  - preset_id: deepseek-cn
+    display_name: DeepSeek 国内
+    provider: deepseek
+    base_url: https://api.deepseek.com
+    model_id: deepseek-v4-pro
+    structured_output_mode: json_object
+    security_default: false
+    source_url: https://api-docs.deepseek.com/zh-cn/quick_start/pricing/

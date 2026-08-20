@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <title>网络安全智能体工作台</title>
+  <link rel="stylesheet" href="/static/workbench.css">
+  <script src="/static/workbench.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="网络安全智能体工作台首页">
+      <span class="brand-mark" aria-hidden="true">CA</span>
+      <span>
+        <strong>Cyber Agent</strong>
+        <small>通用网络安全智能体</small>
+      </span>
+    </a>
+    <div class="system-state">
+      <span class="pulse" aria-hidden="true"></span>
+      本地安全工作台
+    </div>
+  </header>
+
+  <main class="shell">
+    <section id="runtime-source-banner" class="runtime-source-banner" hidden>
+      <strong id="runtime-source-title">任务运行数据源尚未启用</strong>
+      <span id="runtime-source-detail">当前正式 Runtime 尚未就绪；页面不会生成或展示模拟执行结果。</span>
+    </section>
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">AUTONOMOUS SECURITY OPERATIONS</p>
+      <h1 id="page-title">网络安全智能体工作台</h1>
+      <p class="intro-copy">
+        从任务理解、规划和受控工具执行，到证据验证与审计留痕，完成可复核的安全任务闭环。
+      </p>
+      <div class="trust-row" aria-label="系统安全能力">
+        <span>策略门禁</span>
+        <span>隔离执行</span>
+        <span>证据验证</span>
+        <span>全程审计</span>
+      </div>
+    </section>
+
+    <div class="workspace-grid">
+      <section class="panel task-panel" aria-labelledby="task-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="step-label">01 / TASK INTAKE</p>
+            <h2 id="task-heading">创建安全任务</h2>
+          </div>
+          <span class="panel-tag">受控输入</span>
+        </div>
+
+        <form id="run-form" novalidate>
+          <fieldset class="field-group scenario-fieldset">
+            <legend>选择安全场景</legend>
+            <div class="scenario-grid">
+              <label class="scenario-card is-selected" data-scenario-card="web.idor">
+                <input type="radio" name="task-pack" value="web.idor" checked>
+                <span class="scenario-icon" aria-hidden="true">WEB</span>
+                <span>
+                  <strong>Web安全评估</strong>
+                  <small>接口访问控制与越权验证</small>
+                  <small class="taskpack-readiness" data-taskpack-readiness="web.idor" data-state="UNKNOWN">正在检查 Runtime</small>
+                </span>
+                <span class="scenario-check" aria-hidden="true">✓</span>
+              </label>
+              <label class="scenario-card" data-scenario-card="source.audit.python">
+                <input type="radio" name="task-pack" value="source.audit.python">
+                <span class="scenario-icon source-icon" aria-hidden="true">PY</span>
+                <span>
+                  <strong>Python源码审计</strong>
+                  <small>静态数据流与受控假设验证</small>
+                  <small class="taskpack-readiness" data-taskpack-readiness="source.audit.python" data-state="UNKNOWN">正在检查 Runtime</small>
+                </span>
+                <span class="scenario-check" aria-hidden="true">✓</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <label class="field-group" for="request-text">
+            <span class="field-label">自然语言任务描述</span>
+            <textarea
+              id="request-text"
+              name="request-text"
+              rows="4"
+              maxlength="100000"
+              required
+              placeholder="例如：评估授权订单接口是否存在跨租户访问风险，并给出证据链。"
+            ></textarea>
+            <span class="field-hint">描述目标与授权范围，智能体将自动生成执行计划。</span>
+          </label>
+
+          <div id="web-fields" class="scenario-fields">
+            <label class="field-group" for="target-url">
+              <span class="field-label">授权目标</span>
+              <input
+                id="target-url"
+                name="target-url"
+                type="url"
+                value="http://127.0.0.1:8080/api/orders"
+                maxlength="2048"
+                spellcheck="false"
+                required
+              >
+              <span class="field-hint">仅填写已获授权的HTTP或HTTPS目标。</span>
+            </label>
+            <div class="binding-grid" aria-label="Web测试业务绑定">
+              <label class="field-group" for="actor-id">
+                <span class="field-label">测试身份</span>
+                <input id="actor-id" type="text" value="alice" maxlength="255" required>
+              </label>
+              <label class="field-group" for="baseline-id">
+                <span class="field-label">基线对象</span>
+                <input id="baseline-id" type="text" value="1001" maxlength="255" required>
+              </label>
+              <label class="field-group" for="probe-id">
+                <span class="field-label">探测对象</span>
+                <input id="probe-id" type="text" value="2002" maxlength="255" required>
+              </label>
+            </div>
+          </div>
+
+          <div id="source-fields" class="scenario-fields" hidden>
+            <label class="upload-zone" for="source-zip">
+              <span class="upload-symbol" aria-hidden="true">ZIP</span>
+              <span>
+                <strong>上传Python源码压缩包</strong>
+                <small id="file-name">选择一个经过授权的 .zip 文件</small>
+              </span>
+              <span class="upload-action">选择文件</span>
+              <input id="source-zip" type="file" accept=".zip,application/zip">
+            </label>
+            <p class="upload-note">材料仅进入受控Artifact流程，不在浏览器或宿主目录中执行。</p>
+          </div>
+
+          <div id="form-message" class="form-message" role="alert" hidden></div>
+
+          <button id="run-button" class="run-button" type="submit">
+            <span class="run-button-icon" aria-hidden="true">▶</span>
+            <span id="run-button-label">开始安全评估</span>
+          </button>
+        </form>
+      </section>
+
+      <section class="panel execution-panel" aria-labelledby="execution-heading">
+        <div class="panel-heading">
+          <div>
+            <p class="step-label">02 / EXECUTION TRACE</p>
+            <h2 id="execution-heading">智能体执行过程</h2>
+          </div>
+          <span id="run-status" class="status-chip" data-status="idle">待运行</span>
+        </div>
+
+        <div class="run-overview" aria-live="polite">
+          <div class="overview-item">
+            <span>当前步骤</span>
+            <strong id="current-step">等待任务输入</strong>
+          </div>
+          <div class="overview-item verdict-overview">
+            <span>验证结论</span>
+            <strong id="verdict-title">尚未生成</strong>
+            <small id="verdict-summary">工具成功不等于任务成功，最终结果必须经过Verifier。</small>
+          </div>
+        </div>
+
+        <div class="run-data-summary" aria-live="polite">
+          <span>Evidence <strong id="evidence-count">0</strong></span>
+          <span>ModelCallRef <strong id="model-trace-count">0</strong></span>
+          <span>Report <strong>unavailable</strong></span>
+        </div>
+
+        <div class="evidence-heading">
+          <h3>Evidence</h3>
+          <p>仅展示经过正式 Run 投影的脱敏证据摘要。</p>
+        </div>
+        <ul id="evidence-list" class="evidence-list" aria-live="polite">
+          <li class="evidence-empty">运行完成后在此显示证据。</li>
+        </ul>
+
+        <ol class="phase-track" aria-label="智能体执行阶段">
+          <li data-phase="Task"><span>1</span><strong>Task</strong><small>任务理解</small></li>
+          <li data-phase="Plan"><span>2</span><strong>Plan</strong><small>自动规划</small></li>
+          <li data-phase="Tool"><span>3</span><strong>Tool</strong><small>工具选择</small></li>
+          <li data-phase="Policy"><span>4</span><strong>Policy</strong><small>策略门禁</small></li>
+          <li data-phase="Evidence"><span>5</span><strong>Evidence</strong><small>证据采集</small></li>
+          <li data-phase="Verification"><span>6</span><strong>Verify</strong><small>结果验证</small></li>
+        </ol>
+
+        <div class="timeline-heading">
+          <div>
+            <h3>Audit 时间线</h3>
+            <p id="run-reference">运行后将在此显示可验证事件。</p>
+          </div>
+          <span id="audit-count">0 events</span>
+        </div>
+
+        <ol id="audit-timeline" class="audit-timeline" aria-live="polite">
+          <li id="audit-empty" class="audit-empty">
+            <span class="empty-radar" aria-hidden="true"></span>
+            <strong>等待智能体启动</strong>
+            <small>Task、Plan、Tool、Policy、Evidence和Verification将按序呈现。</small>
+          </li>
+        </ol>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <span>General Cybersecurity Agent · Competition Workbench</span>
+    <span>本地运行 · 无第三方前端依赖</span>
+  </footer>
+</body>
+</html>

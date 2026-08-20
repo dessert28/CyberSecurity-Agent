@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <title>网络安全智能体 · 部署管理</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">DEPLOYMENT ADMIN CONSOLE</p>
+      <h1>网络安全智能体部署管理</h1>
+      <p class="subtitle">配置模型连接，并完成启动前健康检查。</p>
+    </div>
+    <div class="boundary-note">部署人员入口 · 不提供任务执行参数</div>
+  </header>
+
+  <main>
+    <section class="status-strip" aria-label="当前模型状态">
+      <div>
+        <span class="label">配置状态</span>
+        <strong id="configured-status">读取中</strong>
+      </div>
+      <div>
+        <span class="label">当前模型</span>
+        <strong id="current-model">—</strong>
+      </div>
+      <div>
+        <span class="label">连接状态</span>
+        <strong id="connection-status">未检测</strong>
+      </div>
+      <div>
+        <span class="label">运行模式</span>
+        <strong id="console-mode">—</strong>
+      </div>
+    </section>
+
+    <div class="layout">
+      <section class="panel" aria-labelledby="model-config-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">MODEL CONNECTION</p>
+            <h2 id="model-config-title">国产大模型配置</h2>
+          </div>
+          <span id="write-state" class="pill">加载中</span>
+        </div>
+
+        <form id="model-form" novalidate>
+          <label for="provider">模型供应商</label>
+          <select id="provider" name="provider" required></select>
+
+          <label for="model-name">模型名称</label>
+          <input id="model-name" name="model_name" type="text" maxlength="255" required
+                 placeholder="例如 deepseek-chat">
+
+          <label for="api-base-url">API Base URL</label>
+          <input id="api-base-url" name="api_base_url" type="url" maxlength="2048" required
+                 placeholder="https://api.example.cn/v1" autocomplete="off" spellcheck="false">
+
+          <label for="api-key">API Key</label>
+          <input id="api-key" name="api_key" type="password" maxlength="16384"
+                 placeholder="留空则保留服务端已有密钥" autocomplete="new-password"
+                 autocapitalize="off" spellcheck="false">
+          <p class="field-note">密钥只提交到服务端安全存储，不会回显或保存在浏览器中。</p>
+
+          <div class="actions">
+            <button id="save-button" type="submit">保存配置</button>
+            <button id="test-button" type="button" class="secondary">测试连接</button>
+          </div>
+        </form>
+        <p id="operation-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="panel" aria-labelledby="health-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">STARTUP GATE</p>
+            <h2 id="health-title">运行前检查</h2>
+          </div>
+          <button id="refresh-health" type="button" class="secondary compact">刷新</button>
+        </div>
+        <div id="overall-health" class="overall-health">正在检查系统状态…</div>
+        <ul id="health-list" class="health-list" aria-live="polite"></ul>
+      </section>
+    </div>
+
+    <section class="panel boundary" aria-labelledby="boundary-title">
+      <p class="eyebrow">IMMUTABLE SECURITY BOUNDARY</p>
+      <h2 id="boundary-title">管理员权限边界</h2>
+      <p>本页面仅管理模型供应商、模型名称、连接地址和服务端凭据。工具、验证器、安全策略、Docker 参数与任务执行逻辑均为只读部署资产，无法从浏览器修改。</p>
+    </section>
+  </main>
+
+  <script src="/static/admin.js" defer></script>
+</body>
+</html>
