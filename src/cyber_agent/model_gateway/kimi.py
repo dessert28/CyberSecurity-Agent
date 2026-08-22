@@ -19,9 +19,11 @@ from cyber_agent.contracts.errors import CyberAgentError
 from cyber_agent.contracts.model import (
     ModelCapabilities,
     ModelHealth,
+    ModelPurpose,
     ModelRequest,
     ModelResponse,
     ModelUsage,
+    ReasoningEffort,
 )
 
 from ._schema import JsonSchemaViolation, validate_json_schema
@@ -168,6 +170,22 @@ class KimiK3Adapter:
             schema_valid=True,
         )
 
+    async def probe_reply(self) -> bool:
+        """Return whether the provider produced a non-empty final reply."""
+
+        api_key = self._api_key()
+        if api_key is None:
+            raise _error(
+                "MODEL_API_KEY_MISSING",
+                ErrorCategory.SYSTEM_ERROR,
+                f"The configured API key environment variable {self._config.api_key_env} is not set.",
+            )
+        request = _connection_probe_request()
+        _, body, _ = await self._post_with_retries(
+            self._connection_probe_payload(), request, api_key
+        )
+        return _has_nonempty_message_content(body)
+
     async def health_check(self) -> ModelHealth:
         api_key = self._api_key()
         if api_key is None:
@@ -236,6 +254,19 @@ class KimiK3Adapter:
                 request.reasoning_effort.value
             ],
             "max_tokens": request.max_output_tokens,
+        }
+
+    def _connection_probe_payload(self) -> dict[str, Any]:
+        return {
+            "model": self._config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Reply with a short non-empty message. Do not call tools.",
+                },
+                {"role": "user", "content": "connection probe"},
+            ],
+            "max_tokens": 16,
         }
 
     def _repair_payload(
@@ -350,6 +381,26 @@ def _safe_message_content(body: Mapping[str, Any]) -> str:
     except (KeyError, IndexError, TypeError):
         return "{}"
     return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+
+def _has_nonempty_message_content(body: Mapping[str, Any]) -> bool:
+    try:
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return isinstance(content, str) and bool(content.strip())
+
+
+def _connection_probe_request() -> ModelRequest:
+    return ModelRequest(
+        purpose=ModelPurpose.TASK_UNDERSTANDING,
+        system_instructions="Reply with a short non-empty message.",
+        context={"probe": "connection"},
+        output_schema={},
+        reasoning_effort=ReasoningEffort.LOW,
+        max_output_tokens=16,
+        timeout_seconds=30,
+    )
 
 
 def _extract_data(body: Mapping[str, Any], schema: dict[str, Any]) -> dict[str, Any]:

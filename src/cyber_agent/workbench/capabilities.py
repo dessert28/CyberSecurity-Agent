@@ -14,6 +14,7 @@ from cyber_agent.workbench.adapters import AdapterFactoryError
 from cyber_agent.workbench.profiles import ModelProfileStore
 from cyber_agent.workbench.schemas import (
     CapabilityProbeRecord,
+    ModelConnectionResult,
     DockerStatusView,
     ModelCheckResult,
     ModelCheckStatus,
@@ -26,6 +27,8 @@ from cyber_agent.workbench.store import StoredModelProfile
 
 
 class CapabilityAdapter(Protocol):
+    async def probe_reply(self) -> bool: ...
+
     async def generate_structured(self, request: ModelRequest): ...
 
     async def aclose(self) -> None: ...
@@ -157,6 +160,49 @@ class ModelCapabilityService:
             expires_at=probe.expires_at,
             probe_id=probe.probe_id,
             active=view.active,
+        )
+
+    async def check_connection(self, profile_id: UUID) -> ModelConnectionResult:
+        """Confirm a provider returns a final reply without changing runtime readiness."""
+
+        profile = self._profiles.get(profile_id)
+        adapter: CapabilityAdapter | None = None
+        passed = False
+        code = "MODEL_CONNECTION_FAILED"
+        message = "The model connection check failed."
+        if not profile.credential_present:
+            code = "MODEL_CREDENTIAL_MISSING"
+            message = "Save an API credential before checking this model profile."
+        else:
+            try:
+                adapter = self._adapter_factory.create(profile)
+                if await adapter.probe_reply():
+                    passed = True
+                    code = "MODEL_CONNECTION_PASSED"
+                    message = "The model returned a non-empty connection probe reply."
+                else:
+                    code = "MODEL_REPLY_EMPTY"
+                    message = "The model did not return a non-empty final reply."
+            except CyberAgentError as exc:
+                code = exc.error.code
+                message = exc.error.safe_message
+            except AdapterFactoryError:
+                code = "MODEL_CHECK_SETUP_FAILED"
+                message = "The model profile could not be prepared for a connection check."
+            except Exception:
+                code = "MODEL_CONNECTION_FAILED"
+                message = "The model connection check failed safely."
+            finally:
+                if adapter is not None:
+                    try:
+                        await adapter.aclose()
+                    except Exception:
+                        pass
+        return ModelConnectionResult(
+            profile_id=profile_id,
+            passed=passed,
+            code=code,
+            message=message,
         )
 
     def runtime_readiness(self, profile_id: UUID | None = None) -> ModelRuntimeReadiness:

@@ -26,7 +26,13 @@ from cyber_agent.contracts.model import (
 )
 from cyber_agent.model_gateway._schema import JsonSchemaViolation
 
-from .kimi import _error, _extract_data, _safe_message_content
+from .kimi import (
+    _connection_probe_request,
+    _error,
+    _extract_data,
+    _has_nonempty_message_content,
+    _safe_message_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +166,22 @@ class OpenAICompatibleAdapter:
             message="available" if available else "model endpoint unavailable",
         )
 
+    async def probe_reply(self) -> bool:
+        """Return whether the provider produced a non-empty final reply."""
+
+        api_key = self._api_key()
+        if api_key is None:
+            raise _error(
+                "MODEL_API_KEY_MISSING",
+                ErrorCategory.SYSTEM_ERROR,
+                "The configured model credential is unavailable.",
+            )
+        request = _connection_probe_request()
+        _, body, _ = await self._post_with_retries(
+            self._connection_probe_payload(), request, api_key
+        )
+        return _has_nonempty_message_content(body)
+
     def get_capabilities(self) -> ModelCapabilities:
         return ModelCapabilities(
             provider=self._config.provider,
@@ -220,6 +242,19 @@ class OpenAICompatibleAdapter:
                 "high" if request.reasoning_effort.value in {"high", "max"} else "low"
             )
         return payload
+
+    def _connection_probe_payload(self) -> dict[str, Any]:
+        return {
+            "model": self._config.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Reply with a short non-empty message. Do not call tools.",
+                },
+                {"role": "user", "content": "connection probe"},
+            ],
+            "max_tokens": 16,
+        }
 
     def _repair_payload(
         self,

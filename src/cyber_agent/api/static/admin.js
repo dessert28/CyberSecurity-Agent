@@ -8,6 +8,7 @@ const apiBaseUrl = document.getElementById("api-base-url");
 const apiKey = document.getElementById("api-key");
 const saveButton = document.getElementById("save-button");
 const testButton = document.getElementById("test-button");
+const capabilityTestButton = document.getElementById("capability-test-button");
 const message = document.getElementById("operation-message");
 
 const componentLabels = {
@@ -70,7 +71,9 @@ function renderConfiguration(config) {
   [provider, modelName, apiBaseUrl, apiKey, saveButton].forEach((element) => {
     element.disabled = !config.writable;
   });
-  testButton.disabled = !config.credential_configured || !config.writable;
+  const modelTestingDisabled = !config.credential_configured || !config.writable;
+  testButton.disabled = modelTestingDisabled;
+  capabilityTestButton.disabled = modelTestingDisabled;
 }
 
 async function loadConfiguration() {
@@ -110,25 +113,15 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-testButton.addEventListener("click", async () => {
-  setMessage("正在执行 API 可达性与结构化输出检测…");
+async function runModelTest(path, pendingMessage, messages) {
+  setMessage(pendingMessage);
   testButton.disabled = true;
+  capabilityTestButton.disabled = true;
   try {
-    const result = await requestJson("/api/v1/admin/connection-test", {
+    const result = await requestJson(path, {
       method: "POST",
       body: "{}",
     });
-    const messages = {
-      MODEL_CHECK_PASSED: "连接成功，模型已返回符合约束的结构化结果。",
-      MODEL_AUTH_FAILED: "API Key 错误或没有访问该模型的权限。",
-      MODEL_NETWORK_ERROR: "无法连接模型服务，请检查网络和 API 地址。",
-      MODEL_TIMEOUT: "模型服务响应超时。",
-      MODEL_QUOTA_EXCEEDED: "模型账号额度或余额不可用。",
-      MODEL_RATE_LIMITED: "模型服务触发了请求频率限制。",
-      MODEL_REQUEST_REJECTED: "模型服务拒绝了本次探测请求。",
-      MODEL_STRUCTURED_OUTPUT_INCOMPATIBLE: "API 可以访问，但模型未返回要求的结构化结果。",
-      MODEL_CHECK_SETUP_FAILED: "模型地址未通过安全检查，或本地连接环境不可用。",
-    };
     const summary = messages[result.code] || result.message;
     const detail = `${summary}（${result.latency_ms} ms，模型 ${result.model}）`;
     setMessage(detail, result.status === "ok" ? "success" : "error");
@@ -138,9 +131,44 @@ testButton.addEventListener("click", async () => {
     setMessage(error.message, "error");
   } finally {
     const config = await loadConfiguration().catch(() => null);
-    testButton.disabled = !config?.writable || !config?.credential_configured;
+    const modelTestingDisabled = !config?.writable || !config?.credential_configured;
+    testButton.disabled = modelTestingDisabled;
+    capabilityTestButton.disabled = modelTestingDisabled;
   }
-});
+}
+
+testButton.addEventListener("click", () => runModelTest(
+  "/api/v1/admin/connection-test",
+  "正在测试模型连接…",
+  {
+    MODEL_CONNECTION_PASSED: "连接成功；该模型尚未通过结构化能力验证，不能用于正式任务。",
+    MODEL_REPLY_EMPTY: "模型没有返回可用的最终回复。",
+    MODEL_AUTH_FAILED: "API Key 错误或没有访问该模型的权限。",
+    MODEL_NETWORK_ERROR: "无法连接模型服务，请检查网络和 API 地址。",
+    MODEL_TIMEOUT: "模型服务响应超时。",
+    MODEL_QUOTA_EXCEEDED: "模型账号额度或余额不可用。",
+    MODEL_RATE_LIMITED: "模型服务触发了请求频率限制。",
+    MODEL_REQUEST_REJECTED: "模型服务拒绝了本次探测请求。",
+    MODEL_CHECK_SETUP_FAILED: "模型地址未通过安全检查，或本地连接环境不可用。",
+  },
+));
+
+capabilityTestButton.addEventListener("click", () => runModelTest(
+  "/api/v1/admin/capability-test",
+  "正在验证结构化输出能力…",
+  {
+    MODEL_CHECK_PASSED: "结构化能力验证通过，模型已激活。",
+    MODEL_AUTH_FAILED: "API Key 错误或没有访问该模型的权限。",
+    MODEL_NETWORK_ERROR: "无法连接模型服务，请检查网络和 API 地址。",
+    MODEL_TIMEOUT: "模型服务响应超时。",
+    MODEL_QUOTA_EXCEEDED: "模型账号额度或余额不可用。",
+    MODEL_RATE_LIMITED: "模型服务触发了请求频率限制。",
+    MODEL_REQUEST_REJECTED: "模型服务拒绝了本次探测请求。",
+    MODEL_SCHEMA_INVALID: "API 已返回结果，但模型未满足要求的结构化格式。",
+    MODEL_STRUCTURED_OUTPUT_INCOMPATIBLE: "API 可以访问，但模型未返回要求的结构化结果。",
+    MODEL_CHECK_SETUP_FAILED: "模型地址未通过安全检查，或本地连接环境不可用。",
+  },
+));
 
 function healthMark(state) {
   if (state === "ready") return "✓";

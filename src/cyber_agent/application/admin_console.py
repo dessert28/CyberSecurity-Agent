@@ -213,6 +213,38 @@ class AdminConsoleService:
                 status_code=409,
             )
         started = perf_counter()
+        result = await self._capabilities.check_connection(selected.profile_id)
+        latency_ms = max(0, int((perf_counter() - started) * 1_000))
+        return AdminConnectionTestResult(
+            status="ok" if result.passed else "error",
+            success=result.passed,
+            code=result.code,
+            message=result.message,
+            api_accessible=result.passed,
+            structured_output_detected=False,
+            latency_ms=latency_ms,
+            model=selected.model_id,
+            model_name=selected.model_id,
+            active=selected.active,
+        )
+
+    async def verify_structured_output(self) -> AdminConnectionTestResult:
+        """Run the formal capability probe and activate a passing model profile."""
+
+        selected = self._selected_profile_view()
+        if selected is None:
+            raise AdminConsoleError(
+                "MODEL_CONFIGURATION_MISSING",
+                "Save a model configuration before testing the connection.",
+                status_code=409,
+            )
+        if not selected.credential_present:
+            raise AdminConsoleError(
+                "MODEL_CREDENTIAL_MISSING",
+                "Save an API credential before testing the connection.",
+                status_code=409,
+            )
+        started = perf_counter()
         result = await self._capabilities.check_model(selected.profile_id)
         latency_ms = max(0, int((perf_counter() - started) * 1_000))
         active = result.active

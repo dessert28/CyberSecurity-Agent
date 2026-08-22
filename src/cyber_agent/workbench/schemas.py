@@ -164,6 +164,15 @@ class ModelCheckResult(WorkbenchModel):
     _expires_at = field_validator("expires_at")(require_utc_timestamp.__func__)
 
 
+class ModelConnectionResult(WorkbenchModel):
+    """Ephemeral evidence that a configured model returned a final reply."""
+
+    profile_id: UUID
+    passed: bool
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,127}$")
+    message: str = Field(min_length=1, max_length=2_000)
+
+
 class CapabilityProbeRecord(WorkbenchModel):
     """Immutable evidence that a specific model identity passed or failed a probe."""
 
