@@ -9,6 +9,7 @@ __pycache__/
 .coverage
 htmlcov/
 .uv-cache/
+.worktrees/
 
 # Local configuration and credentials
 .env
