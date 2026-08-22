@@ -410,6 +410,13 @@ def create_workbench_app(
         async def test_admin_connection(_: ShutdownRequest) -> AdminConnectionTestResult:
             return await admin_console.test_connection()
 
+        @app.post(
+            "/api/v1/admin/capability-test",
+            response_model=AdminConnectionTestResult,
+        )
+        async def test_admin_capability(_: ShutdownRequest) -> AdminConnectionTestResult:
+            return await admin_console.verify_structured_output()
+
         @app.get(
             "/api/v1/admin/health",
             response_model=AdminHealthResponse,
