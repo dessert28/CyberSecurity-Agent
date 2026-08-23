@@ -83,6 +83,32 @@ def test_connection_probe_accepts_a_non_json_nonempty_reply(
 
 
 @pytest.mark.parametrize("adapter_factory", [_openai_adapter, _kimi_adapter])
+def test_connection_probe_accepts_text_content_parts(
+    adapter_factory: AdapterFactory,
+) -> None:
+    client = _client(
+        lambda _: httpx.Response(
+            200,
+            json={
+                "id": "reply-1",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": [{"type": "text", "text": "connected"}]},
+                    }
+                ],
+            },
+        )
+    )
+    adapter = adapter_factory(client)
+    try:
+        assert asyncio.run(adapter.probe_reply()) is True  # type: ignore[attr-defined]
+    finally:
+        asyncio.run(client.aclose())
+
+
+@pytest.mark.parametrize("adapter_factory", [_openai_adapter, _kimi_adapter])
 @pytest.mark.parametrize("content", ["", "   ", None])
 def test_connection_probe_rejects_blank_or_missing_final_content(
     adapter_factory: AdapterFactory,

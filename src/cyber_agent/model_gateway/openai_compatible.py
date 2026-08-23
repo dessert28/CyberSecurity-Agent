@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
@@ -259,7 +260,8 @@ class OpenAICompatibleAdapter:
                 separators=(",", ":"),
             )
             system = (
-                f"{system}\nReturn only one JSON object matching this JSON Schema: {schema_text}"
+                f"{system}\nReturn exactly one raw JSON object matching this JSON Schema: {schema_text}. "
+                "Do not use Markdown code fences, explanations, or additional fields."
             )
             response_format: dict[str, Any] = {"type": "json_object"}
         else:
@@ -288,6 +290,7 @@ class OpenAICompatibleAdapter:
             "response_format": response_format,
             "max_tokens": request.max_output_tokens,
         }
+        payload.update(_reasoning_disabled_fields(self._config.base_url))
         if self._config.provider == "deepseek":
             payload["reasoning_effort"] = (
                 "high" if request.reasoning_effort.value in {"high", "max"} else "low"
@@ -295,7 +298,7 @@ class OpenAICompatibleAdapter:
         return payload
 
     def _connection_probe_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "model": self._config.model,
             "messages": [
                 {
@@ -306,6 +309,8 @@ class OpenAICompatibleAdapter:
             ],
             "max_tokens": 16,
         }
+        payload.update(_reasoning_disabled_fields(self._config.base_url))
+        return payload
 
     def _repair_payload(
         self,
@@ -319,8 +324,9 @@ class OpenAICompatibleAdapter:
                 {
                     "role": "user",
                     "content": (
-                        "Repair the preceding answer once. Return only a JSON object "
-                        "that satisfies the requested schema; do not add commentary."
+                        "Repair the preceding answer once. Return exactly one raw JSON object "
+                        "that satisfies the requested schema. Do not use Markdown code fences, "
+                        "explanations, or additional fields."
                     ),
                 },
             ]
@@ -551,6 +557,15 @@ def _http_error_code(status_code: int, error_type: str | None) -> str | None:
     if status_code >= 400:
         return "MODEL_REQUEST_REJECTED"
     return None
+
+
+def _reasoning_disabled_fields(base_url: str) -> dict[str, Any]:
+    hostname = (urlparse(base_url).hostname or "").lower()
+    if hostname.endswith("dashscope.aliyuncs.com"):
+        return {"enable_thinking": False}
+    if hostname == "api.deepseek.com":
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
 
 
 def _trace_error_code(exc: BaseException) -> str:

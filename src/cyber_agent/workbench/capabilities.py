@@ -47,11 +47,15 @@ class CapabilityAdapterFactory(Protocol):
 
 _PROBE_SCHEMA = {
     "type": "object",
-    "properties": {"ok": {"type": "boolean", "const": True}},
-    "required": ["ok"],
+    "properties": {
+        "ok": {"type": "boolean", "const": True},
+        "label": {"type": "string", "const": "probe"},
+        "items": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["ok", "label", "items"],
     "additionalProperties": False,
 }
-_CAPABILITY_CONTRACT_VERSION = "structured-output/v1"
+_CAPABILITY_CONTRACT_VERSION = "structured-output/v2"
 _DEFAULT_PROBE_TTL = timedelta(minutes=30)
 _MIN_PROBE_TTL = timedelta(minutes=1)
 _MAX_PROBE_TTL = timedelta(days=1)
@@ -98,7 +102,9 @@ class ModelCapabilityService:
                         purpose=ModelPurpose.TASK_UNDERSTANDING,
                         system_instructions=(
                             "Return only one JSON object that matches the supplied schema. "
-                            "Set ok to true. Do not call tools or include additional fields."
+                            "Set ok to true, label to probe, and items to [\"ready\"]. "
+                            "Return raw JSON without Markdown or explanations. "
+                            "Do not call tools or include additional fields."
                         ),
                         context={"probe": "structured_output"},
                         output_schema=_PROBE_SCHEMA,
@@ -107,7 +113,11 @@ class ModelCapabilityService:
                         timeout_seconds=30,
                     )
                 )
-                if response.schema_valid and response.data == {"ok": True}:
+                if response.schema_valid and response.data == {
+                    "ok": True,
+                    "label": "probe",
+                    "items": ["ready"],
+                }:
                     endpoint_fingerprint = (
                         self._adapter_factory.capability_probe_fingerprint(
                             profile,

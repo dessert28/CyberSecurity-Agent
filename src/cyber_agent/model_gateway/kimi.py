@@ -281,10 +281,15 @@ class KimiK3Adapter:
         return value if value else None
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        system_instructions = (
+            f"{request.system_instructions}\n"
+            "Return exactly one raw JSON object matching the requested schema. "
+            "Do not use Markdown code fences, explanations, or additional fields."
+        )
         return {
             "model": self._config.model,
             "messages": [
-                {"role": "system", "content": request.system_instructions},
+                {"role": "system", "content": system_instructions},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -330,8 +335,9 @@ class KimiK3Adapter:
                 {
                     "role": "user",
                     "content": (
-                        "Repair the preceding answer once. Return only a JSON object that "
-                        "satisfies the requested schema; do not add commentary."
+                        "Repair the preceding answer once. Return exactly one raw JSON object "
+                        "that satisfies the requested schema. Do not use Markdown code fences, "
+                        "explanations, or additional fields."
                     ),
                 },
             ]
@@ -528,7 +534,13 @@ def _safe_message_content(body: Mapping[str, Any]) -> str:
         content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return "{}"
-    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text = _text_content_parts(content)
+        if text:
+            return text
+    return json.dumps(content, ensure_ascii=False)
 
 
 def _has_nonempty_message_content(body: Mapping[str, Any]) -> bool:
@@ -536,7 +548,19 @@ def _has_nonempty_message_content(body: Mapping[str, Any]) -> bool:
         content = body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return False
-    return isinstance(content, str) and bool(content.strip())
+    if isinstance(content, str):
+        return bool(content.strip())
+    return isinstance(content, list) and bool(_text_content_parts(content).strip())
+
+
+def _text_content_parts(content: list[Any]) -> str:
+    text_parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            text_parts.append(item)
+        elif isinstance(item, Mapping) and isinstance(item.get("text"), str):
+            text_parts.append(item["text"])
+    return "".join(text_parts)
 
 
 def _connection_probe_request() -> ModelRequest:
@@ -552,12 +576,31 @@ def _connection_probe_request() -> ModelRequest:
 
 
 def _extract_data(body: Mapping[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    content = _safe_message_content(body)
+    content = _normalize_json_content(_safe_message_content(body))
     parsed = json.loads(content)
     if not isinstance(parsed, dict):
         raise ValueError("structured model output must be a JSON object")
     validate_json_schema(parsed, schema)
     return parsed
+
+
+def _normalize_json_content(content: str) -> str:
+    normalized = content.strip()
+    if not normalized:
+        raise ValueError("structured model output is empty")
+    if not normalized.startswith("```"):
+        return normalized
+
+    lines = normalized.splitlines()
+    if len(lines) < 3 or lines[-1].strip() != "```":
+        raise ValueError("structured model output has an invalid Markdown code fence")
+    language = lines[0][3:].strip().lower()
+    if language not in {"", "json"}:
+        raise ValueError("structured model output must use a JSON code fence")
+    inner = "\n".join(lines[1:-1]).strip()
+    if not inner or "```" in inner:
+        raise ValueError("structured model output must contain one JSON code fence")
+    return inner
 
 
 def _http_error_code(status_code: int) -> str | None:

@@ -47,7 +47,7 @@ class StructuredReplyAdapter(ReplyOnlyAdapter):
             request_id=request.request_id,
             provider="openai_compatible",
             model="deepseek-v4-pro-0813",
-            data={"ok": True},
+            data={"ok": True, "label": "probe", "items": ["ready"]},
             usage=ModelUsage(input_tokens=1, output_tokens=1),
             latency_ms=1,
             finish_reason="stop",
