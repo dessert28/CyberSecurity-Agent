@@ -33,6 +33,7 @@ from cyber_agent.application.runtime_readiness import RuntimeReadinessService
 from cyber_agent.application.source_audit_budget import SourceAuditResourceBudget
 from cyber_agent.artifacts import ArtifactMaterializer, InMemoryArtifactStore
 from cyber_agent.executor import UnavailableSourceWorkerGuard, WindowsSourceWorkerGuard
+from cyber_agent.model_gateway import ModelIoTraceStore
 from cyber_agent.task_packs import build_competition_task_pack_catalog
 from cyber_agent.task_packs.source_audit import SOURCE_AUDIT_VERIFIER_ID
 from cyber_agent.task_packs.web_idor import WEB_IDOR_VERIFIER_ID
@@ -129,9 +130,11 @@ def build_local_server(
         credentials=credentials,
     )
     endpoint_policy = ModelEndpointPolicy(resolver=SecureDohFallbackResolver())
+    model_io_traces = ModelIoTraceStore(capacity=100)
     adapter_factory = ModelAdapterFactory(
         credentials=credentials,
         endpoint_policy=endpoint_policy,
+        trace_store=model_io_traces,
     )
     capabilities = ModelCapabilityService(
         profiles=profiles,
@@ -192,6 +195,7 @@ def build_local_server(
         task_packs=catalog,
         verifier_registry=verifiers,
         tool_registry=tools,
+        trace_store=model_io_traces,
     )
     token = launch_token or secrets.token_urlsafe(48)
     app = create_workbench_app(
@@ -211,6 +215,7 @@ def build_local_server(
     app.state.source_artifact_store = artifact_store
     app.state.source_artifact_upload = artifact_upload
     app.state.source_worker_guard = source_worker_guard
+    app.state.model_io_traces = model_io_traces
     return LocalServerBundle(
         app=app,
         host=DEFAULT_HOST,

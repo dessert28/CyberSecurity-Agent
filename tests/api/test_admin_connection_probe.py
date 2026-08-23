@@ -10,6 +10,12 @@ from cyber_agent.api.workbench import create_workbench_app
 from cyber_agent.application.admin_console import AdminConsoleService
 from cyber_agent.workbench.capabilities import ModelCapabilityService
 from cyber_agent.contracts.model import ModelResponse, ModelUsage
+from cyber_agent.model_gateway.io_trace import (
+    ModelIoOperation,
+    ModelIoStage,
+    ModelIoStatus,
+    ModelIoTraceStore,
+)
 from cyber_agent.workbench.credentials import MemoryCredentialStore
 from cyber_agent.workbench.profiles import ModelProfileStore
 from cyber_agent.workbench.schemas import (
@@ -212,3 +218,81 @@ def test_admin_assets_offer_separate_connection_and_capability_actions() -> None
     assert '"/api/v1/admin/connection-test"' in script.text
     assert '"/api/v1/admin/capability-test"' in script.text
     assert "连接成功；该模型尚未通过结构化能力验证，不能用于正式任务。" in script.text
+
+
+def test_admin_model_trace_api_lists_reads_and_clears_full_bodies(tmp_path: Path) -> None:
+    trace_store = ModelIoTraceStore()
+    trace_id = trace_store.begin(
+        provider="deepseek",
+        model="deepseek-v4-pro-0813",
+        operation=ModelIoOperation.GENERATE_STRUCTURED,
+        purpose="task_understanding",
+    )
+    trace_store.append_attempt(
+        trace_id,
+        stage=ModelIoStage.INITIAL,
+        retry_index=0,
+        request_body={"messages": [{"content": "完整输入"}]},
+        response_body='{"raw":"完整输出"}',
+        http_status=200,
+        latency_ms=3683,
+    )
+    trace_store.finish(
+        trace_id,
+        status=ModelIoStatus.FAILED,
+        error_code="MODEL_SCHEMA_INVALID",
+    )
+    profiles = ModelProfileStore(
+        database=WorkbenchStore(
+            database_path=tmp_path / "state.db",
+            runtime_root=tmp_path,
+        ),
+        mode=WorkbenchMode.DEVELOPMENT,
+        credentials=MemoryCredentialStore(),
+    )
+    capabilities = ModelCapabilityService(
+        profiles=profiles,
+        adapter_factory=ReplyOnlyAdapterFactory(),
+        docker_probe=lambda: (False, "not needed"),
+    )
+    app = create_workbench_app(
+        launch_token=TOKEN,
+        origin=ORIGIN,
+        admin_console=AdminConsoleService(
+            profiles=profiles,
+            capabilities=capabilities,
+            trace_store=trace_store,
+        ),
+    )
+
+    with TestClient(app, base_url=ORIGIN) as browser:
+        csrf = _exchange(browser)
+        listing = browser.get("/api/v1/admin/model-traces")
+        detail = browser.get(f"/api/v1/admin/model-traces/{trace_id}")
+        missing = browser.get("/api/v1/admin/model-traces/11111111-1111-4111-8111-111111111111")
+        cleared = browser.delete(
+            "/api/v1/admin/model-traces",
+            headers=_headers(csrf),
+        )
+
+    assert listing.status_code == 200
+    assert listing.json()["traces"][0]["error_code"] == "MODEL_SCHEMA_INVALID"
+    assert detail.status_code == 200
+    assert detail.json()["attempts"][0]["request_body"]["messages"][0]["content"] == "完整输入"
+    assert detail.json()["attempts"][0]["response_body"] == '{"raw":"完整输出"}'
+    assert missing.status_code == 404
+    assert cleared.json() == {"cleared": 1}
+
+
+def test_admin_assets_include_model_trace_debugger() -> None:
+    app = create_workbench_app(launch_token=TOKEN, origin=ORIGIN)
+
+    with TestClient(app, base_url=ORIGIN) as browser:
+        _exchange(browser)
+        page = browser.get("/admin")
+        script = browser.get("/static/admin.js")
+
+    assert 'id="model-trace-list"' in page.text
+    assert 'id="model-trace-detail"' in page.text
+    assert '"/api/v1/admin/model-traces"' in script.text
+    assert "loadModelTraces" in script.text

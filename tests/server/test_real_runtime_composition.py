@@ -6,6 +6,7 @@ from pathlib import Path
 from cyber_agent.application.run_management import CompetitionRunManager
 from cyber_agent.application.runtime_factory import RealRuntimeFactory
 from cyber_agent.executor import ControlledExecutor, SourceAnalysisRunner
+from cyber_agent.model_gateway import ModelIoTraceStore
 from cyber_agent.workbench.adapters import ModelAdapterFactory
 from cyber_agent.workbench.credentials import MemoryCredentialStore
 from cyber_agent.task_packs.source_audit import SOURCE_AUDIT_TASK_PACK_ID
@@ -31,6 +32,8 @@ def test_server_exposes_source_runtime_to_workbench_with_taskpack_readiness(
 
     assert type(factory) is RealRuntimeFactory
     assert type(factory.adapter_factory) is ModelAdapterFactory
+    assert type(bundle.app.state.model_io_traces) is ModelIoTraceStore
+    assert factory.adapter_factory.trace_store is bundle.app.state.model_io_traces
     assert type(manager) is CompetitionRunManager
     assert manager.runtime_preparer is factory
     assert bundle.app.state.run_manager is manager

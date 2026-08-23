@@ -10,6 +10,10 @@ const saveButton = document.getElementById("save-button");
 const testButton = document.getElementById("test-button");
 const capabilityTestButton = document.getElementById("capability-test-button");
 const message = document.getElementById("operation-message");
+const modelTracePath = "/api/v1/admin/model-traces";
+const modelTraceList = document.getElementById("model-trace-list");
+const modelTraceDetail = document.getElementById("model-trace-detail");
+let selectedModelTraceId = null;
 
 const componentLabels = {
   model: "模型连接",
@@ -130,6 +134,7 @@ async function runModelTest(path, pendingMessage, messages) {
   } catch (error) {
     setMessage(error.message, "error");
   } finally {
+    await loadModelTraces({ selectLatest: true }).catch(() => null);
     const config = await loadConfiguration().catch(() => null);
     const modelTestingDisabled = !config?.writable || !config?.credential_configured;
     testButton.disabled = modelTestingDisabled;
@@ -214,9 +219,193 @@ async function loadHealth() {
 
 document.getElementById("refresh-health").addEventListener("click", loadHealth);
 
+const operationLabels = {
+  generate_structured: "结构化生成",
+  probe_reply: "连接探测",
+};
+
+const stageLabels = {
+  initial: "初次请求",
+  repair: "格式修复",
+  retry: "网络重试",
+};
+
+function traceTime(value) {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function traceStatusLabel(status) {
+  if (status === "succeeded") return "成功";
+  if (status === "failed") return "失败";
+  return "进行中";
+}
+
+function renderTraceList(traces) {
+  modelTraceList.replaceChildren();
+  if (!traces.length) {
+    const empty = document.createElement("li");
+    empty.className = "trace-list-empty";
+    empty.textContent = "当前进程暂无调用记录";
+    modelTraceList.appendChild(empty);
+    return;
+  }
+  traces.forEach((trace) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `trace-item ${trace.status}`;
+    if (trace.trace_id === selectedModelTraceId) button.classList.add("selected");
+
+    const heading = document.createElement("span");
+    heading.className = "trace-item-heading";
+    const model = document.createElement("strong");
+    model.textContent = trace.model;
+    const status = document.createElement("span");
+    status.className = "trace-status";
+    status.textContent = traceStatusLabel(trace.status);
+    heading.append(model, status);
+
+    const meta = document.createElement("span");
+    meta.className = "trace-item-meta";
+    meta.textContent = `${operationLabels[trace.operation] || trace.operation} · ${trace.attempt_count} 步 · ${trace.total_latency_ms} ms`;
+    const time = document.createElement("span");
+    time.className = "trace-item-time";
+    time.textContent = traceTime(trace.started_at);
+    button.append(heading, meta, time);
+    button.addEventListener("click", () => loadModelTrace(trace.trace_id));
+    item.appendChild(button);
+    modelTraceList.appendChild(item);
+  });
+}
+
+function prettyResponse(value) {
+  if (value === null || value === undefined) return "（无响应正文）";
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch (_) {
+    return value;
+  }
+}
+
+function createTraceCodeBlock(title, value) {
+  const block = document.createElement("section");
+  block.className = "trace-code-block";
+  const heading = document.createElement("div");
+  heading.className = "trace-code-heading";
+  const label = document.createElement("strong");
+  label.textContent = title;
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "secondary compact copy-button";
+  copy.textContent = "复制";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      copy.textContent = "已复制";
+      window.setTimeout(() => { copy.textContent = "复制"; }, 1200);
+    } catch (_) {
+      copy.textContent = "复制失败";
+    }
+  });
+  heading.append(label, copy);
+  const code = document.createElement("pre");
+  code.textContent = value;
+  block.append(heading, code);
+  return block;
+}
+
+function renderModelTrace(trace) {
+  selectedModelTraceId = trace.trace_id;
+  modelTraceDetail.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "trace-detail-header";
+  const title = document.createElement("h3");
+  title.textContent = `${trace.model} · ${operationLabels[trace.operation] || trace.operation}`;
+  const summary = document.createElement("p");
+  summary.textContent = `${traceTime(trace.started_at)} · ${traceStatusLabel(trace.status)} · ${trace.total_latency_ms} ms${trace.error_code ? ` · ${trace.error_code}` : ""}`;
+  header.append(title, summary);
+  modelTraceDetail.appendChild(header);
+
+  if (!trace.attempts.length) {
+    const empty = document.createElement("div");
+    empty.className = "trace-empty";
+    empty.textContent = "调用在发出 HTTP 请求前结束，没有请求步骤。";
+    modelTraceDetail.appendChild(empty);
+    return;
+  }
+
+  trace.attempts.forEach((attempt) => {
+    const card = document.createElement("article");
+    card.className = `trace-attempt${attempt.schema_valid === false ? " invalid" : ""}`;
+    const heading = document.createElement("div");
+    heading.className = "trace-attempt-heading";
+    const name = document.createElement("h4");
+    name.textContent = `步骤 ${attempt.attempt_no} · ${stageLabels[attempt.stage] || attempt.stage}`;
+    const meta = document.createElement("span");
+    meta.textContent = `HTTP ${attempt.http_status || "—"} · ${attempt.latency_ms} ms`;
+    heading.append(name, meta);
+    card.appendChild(heading);
+    if (attempt.error) {
+      const error = document.createElement("p");
+      error.className = "trace-error";
+      error.textContent = `${attempt.schema_valid === false ? "Schema 校验失败：" : "错误："}${attempt.error}`;
+      card.appendChild(error);
+    }
+    card.append(
+      createTraceCodeBlock("请求 JSON", JSON.stringify(attempt.request_body, null, 2)),
+      createTraceCodeBlock("响应正文", prettyResponse(attempt.response_body)),
+    );
+    modelTraceDetail.appendChild(card);
+  });
+}
+
+async function loadModelTrace(traceId) {
+  selectedModelTraceId = traceId;
+  const trace = await requestJson(`${modelTracePath}/${encodeURIComponent(traceId)}`);
+  renderModelTrace(trace);
+  const listing = await requestJson(modelTracePath);
+  renderTraceList(listing.traces);
+}
+
+async function loadModelTraces({ selectLatest = false } = {}) {
+  const listing = await requestJson(modelTracePath);
+  renderTraceList(listing.traces);
+  if (!listing.traces.length) {
+    selectedModelTraceId = null;
+    modelTraceDetail.replaceChildren();
+    const empty = document.createElement("div");
+    empty.className = "trace-empty";
+    empty.textContent = "暂无模型调用记录。完成连接测试、结构化验证或正式任务后在此查看。";
+    modelTraceDetail.appendChild(empty);
+    return;
+  }
+  const selectedStillExists = listing.traces.some((trace) => trace.trace_id === selectedModelTraceId);
+  const target = selectLatest || !selectedStillExists ? listing.traces[0].trace_id : selectedModelTraceId;
+  await loadModelTrace(target);
+}
+
+document.getElementById("refresh-model-traces").addEventListener("click", async () => {
+  try {
+    await loadModelTraces();
+  } catch (error) {
+    modelTraceDetail.textContent = error.message;
+  }
+});
+
+document.getElementById("clear-model-traces").addEventListener("click", async () => {
+  try {
+    await requestJson(modelTracePath, { method: "DELETE" });
+    await loadModelTraces();
+  } catch (error) {
+    modelTraceDetail.textContent = error.message;
+  }
+});
+
 async function initializeAdminConsole() {
   await loadProviders();
-  await Promise.all([loadConfiguration(), loadHealth()]);
+  await Promise.all([loadConfiguration(), loadHealth(), loadModelTraces()]);
 }
 
 initializeAdminConsole().catch((error) => {

@@ -5,9 +5,15 @@ from __future__ import annotations
 from enum import Enum
 from time import perf_counter
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
 
+from cyber_agent.model_gateway.io_trace import (
+    ModelIoTrace,
+    ModelIoTraceStore,
+    ModelIoTraceSummary,
+)
 from cyber_agent.task_packs import TaskPackCatalog
 from cyber_agent.tools import HealthState, RegistryError, ToolRegistry
 from cyber_agent.verification import VerifierRegistry, VerifierRegistryError
@@ -113,6 +119,14 @@ class AdminHealthResponse(WorkbenchModel):
     checks: tuple[AdminHealthCheck, ...]
 
 
+class AdminModelTraceList(WorkbenchModel):
+    traces: tuple[ModelIoTraceSummary, ...]
+
+
+class AdminModelTraceClearResult(WorkbenchModel):
+    cleared: int = Field(ge=0)
+
+
 _PROVIDER_OPTIONS = (
     AdminProviderOption(value=ProviderType.DEEPSEEK, label="DeepSeek"),
     AdminProviderOption(value=ProviderType.KIMI, label="Kimi"),
@@ -135,12 +149,14 @@ class AdminConsoleService:
         task_packs: TaskPackCatalog | None = None,
         verifier_registry: VerifierRegistry | None = None,
         tool_registry: ToolRegistry | None = None,
+        trace_store: ModelIoTraceStore | None = None,
     ) -> None:
         self._profiles = profiles
         self._capabilities = capabilities
         self._task_packs = task_packs
         self._verifier_registry = verifier_registry
         self._tool_registry = tool_registry
+        self._trace_store = trace_store
 
     def providers(self) -> AdminProviderCatalog:
         return AdminProviderCatalog(providers=_PROVIDER_OPTIONS)
@@ -277,6 +293,32 @@ class AdminConsoleService:
         return AdminHealthResponse(
             overall_ready=all(item.state is AdminHealthState.READY for item in checks),
             checks=checks,
+        )
+
+    def model_traces(self) -> AdminModelTraceList:
+        return AdminModelTraceList(
+            traces=self._trace_store.snapshot() if self._trace_store is not None else ()
+        )
+
+    def model_trace(self, trace_id: UUID) -> ModelIoTrace:
+        if self._trace_store is None:
+            raise AdminConsoleError(
+                "MODEL_TRACE_NOT_FOUND",
+                "The model I/O trace was not found.",
+                status_code=404,
+            )
+        try:
+            return self._trace_store.get(trace_id)
+        except KeyError as exc:
+            raise AdminConsoleError(
+                "MODEL_TRACE_NOT_FOUND",
+                "The model I/O trace was not found.",
+                status_code=404,
+            ) from exc
+
+    def clear_model_traces(self) -> AdminModelTraceClearResult:
+        return AdminModelTraceClearResult(
+            cleared=self._trace_store.clear() if self._trace_store is not None else 0
         )
 
     def _selected_profile_view(self):
@@ -421,6 +463,8 @@ __all__ = [
     "AdminHealthCheck",
     "AdminHealthResponse",
     "AdminHealthState",
+    "AdminModelTraceClearResult",
+    "AdminModelTraceList",
     "AdminModelConfigurationRequest",
     "AdminModelConfigurationView",
     "AdminProviderOption",

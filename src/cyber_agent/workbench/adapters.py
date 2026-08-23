@@ -10,6 +10,7 @@ from cyber_agent.model_gateway import (
     KimiK3Config,
     OpenAICompatibleAdapter,
     OpenAICompatibleConfig,
+    ModelIoTraceStore,
     StructuredOutputMode,
 )
 from cyber_agent.workbench.credentials import CredentialBackendError, CredentialStore
@@ -37,10 +38,16 @@ class ModelAdapterFactory:
         *,
         credentials: CredentialStore,
         endpoint_policy: ModelEndpointPolicy,
+        trace_store: ModelIoTraceStore | None = None,
     ) -> None:
         self._credentials = credentials
         self._endpoint_policy = endpoint_policy
+        self._trace_store = trace_store
         self._check_snapshots: dict[UUID, EndpointSnapshot] = {}
+
+    @property
+    def trace_store(self) -> ModelIoTraceStore | None:
+        return self._trace_store
 
     def create(self, profile: StoredModelProfile):
         if not isinstance(profile.provider, ProviderType):
@@ -70,6 +77,7 @@ class ModelAdapterFactory:
                 ),
                 environment=environment,
                 request_guard=request_guard,
+                trace_store=self._trace_store,
             )
         if profile.provider in {
             ProviderType.DEEPSEEK,
@@ -91,6 +99,7 @@ class ModelAdapterFactory:
                 ),
                 environment=environment,
                 request_guard=request_guard,
+                trace_store=self._trace_store,
             )
         raise AdapterFactoryError("model profile provider is not allowlisted")
 

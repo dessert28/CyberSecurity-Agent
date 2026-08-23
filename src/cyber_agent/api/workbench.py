@@ -23,10 +23,13 @@ from cyber_agent.application.admin_console import (
     AdminConsoleError,
     AdminConsoleService,
     AdminHealthResponse,
+    AdminModelTraceClearResult,
+    AdminModelTraceList,
     AdminModelConfigurationRequest,
     AdminModelConfigurationView,
     AdminProviderCatalog,
 )
+from cyber_agent.model_gateway.io_trace import ModelIoTrace
 from cyber_agent.application.run_management import (
     CompetitionRunManager,
     RunAcceptedResponse,
@@ -423,6 +426,27 @@ def create_workbench_app(
         )
         async def admin_health() -> AdminHealthResponse:
             return admin_console.health()
+
+        @app.get(
+            "/api/v1/admin/model-traces",
+            response_model=AdminModelTraceList,
+        )
+        async def admin_model_traces() -> AdminModelTraceList:
+            return admin_console.model_traces()
+
+        @app.get(
+            "/api/v1/admin/model-traces/{trace_id}",
+            response_model=ModelIoTrace,
+        )
+        async def admin_model_trace(trace_id: UUID) -> ModelIoTrace:
+            return admin_console.model_trace(trace_id)
+
+        @app.delete(
+            "/api/v1/admin/model-traces",
+            response_model=AdminModelTraceClearResult,
+        )
+        async def clear_admin_model_traces() -> AdminModelTraceClearResult:
+            return admin_console.clear_model_traces()
 
     if preset_catalog is not None:
 
