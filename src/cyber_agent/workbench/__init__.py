@@ -7,11 +7,14 @@ from .schemas import (
     RuntimeReadinessResponse,
     TaskPackReadiness,
 )
+from .workspace import LocalWorkspaceManager, WorkspaceManager
 
 __all__ = [
     "CapabilityProbeRecord",
+    "LocalWorkspaceManager",
     "ModelRuntimeReadiness",
     "ReadinessState",
     "RuntimeReadinessResponse",
     "TaskPackReadiness",
+    "WorkspaceManager",
 ]

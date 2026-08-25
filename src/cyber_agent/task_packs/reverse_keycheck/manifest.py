@@ -1,0 +1,57 @@
+"""Fixed metadata for the reverse keycheck task pack."""
+
+from __future__ import annotations
+
+from cyber_agent.contracts.task_pack import TaskPackManifest
+
+REVERSE_KEYCHECK_TASK_PACK_ID = "reverse.keycheck"
+REVERSE_KEYCHECK_TASK_PACK_VERSION = "1.0.0"
+REVERSE_KEYCHECK_TASK_TYPE = "reverse.keycheck"
+REVERSE_KEYCHECK_STATIC_TOOL_ID = "reverse.static_extract"
+REVERSE_KEYCHECK_RUN_TOOL_ID = "reverse.run_verify"
+REVERSE_KEYCHECK_REQUIRED_TOOLS = (
+    REVERSE_KEYCHECK_STATIC_TOOL_ID,
+    REVERSE_KEYCHECK_RUN_TOOL_ID,
+)
+REVERSE_KEYCHECK_STATIC_CAPABILITY = "reverse.static_extract"
+REVERSE_KEYCHECK_RUN_CAPABILITY = "reverse.run_verify"
+REVERSE_KEYCHECK_CAPABILITIES = (
+    REVERSE_KEYCHECK_STATIC_CAPABILITY,
+    REVERSE_KEYCHECK_RUN_CAPABILITY,
+)
+REVERSE_KEYCHECK_VERIFIER_ID = "reverse.keycheck"
+REVERSE_KEYCHECK_REPORT_TEMPLATE = "reverse.keycheck"
+REVERSE_KEYCHECK_SECURITY_POLICY = "scope-policy/1.0"
+
+_MANIFEST = TaskPackManifest(
+    task_pack_id=REVERSE_KEYCHECK_TASK_PACK_ID,
+    version=REVERSE_KEYCHECK_TASK_PACK_VERSION,
+    task_type=REVERSE_KEYCHECK_TASK_TYPE,
+    required_tools=REVERSE_KEYCHECK_REQUIRED_TOOLS,
+    verifier=REVERSE_KEYCHECK_VERIFIER_ID,
+    report_template=REVERSE_KEYCHECK_REPORT_TEMPLATE,
+    security_policy=REVERSE_KEYCHECK_SECURITY_POLICY,
+)
+
+
+def reverse_keycheck_manifest() -> TaskPackManifest:
+    """Return an isolated copy of the fixed least-privilege manifest."""
+
+    return _MANIFEST.model_copy(deep=True)
+
+
+__all__ = [
+    "REVERSE_KEYCHECK_CAPABILITIES",
+    "REVERSE_KEYCHECK_REPORT_TEMPLATE",
+    "REVERSE_KEYCHECK_REQUIRED_TOOLS",
+    "REVERSE_KEYCHECK_RUN_CAPABILITY",
+    "REVERSE_KEYCHECK_RUN_TOOL_ID",
+    "REVERSE_KEYCHECK_SECURITY_POLICY",
+    "REVERSE_KEYCHECK_STATIC_CAPABILITY",
+    "REVERSE_KEYCHECK_STATIC_TOOL_ID",
+    "REVERSE_KEYCHECK_TASK_PACK_ID",
+    "REVERSE_KEYCHECK_TASK_PACK_VERSION",
+    "REVERSE_KEYCHECK_TASK_TYPE",
+    "REVERSE_KEYCHECK_VERIFIER_ID",
+    "reverse_keycheck_manifest",
+]

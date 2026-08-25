@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from cyber_agent.application.run_orchestrator import RunOrchestratorResult
 from cyber_agent.contracts.common import ArtifactRef
 from cyber_agent.contracts.task import Task
 from cyber_agent.contracts.task_pack import TaskPack
-from cyber_agent.task_packs import TaskPackCatalog, TaskPackCatalogError
 from cyber_agent.tools import HealthState, RegistryError, ToolRegistry
 from cyber_agent.verification import VerifierRegistry, VerifierRegistryError
+
+if TYPE_CHECKING:
+    from cyber_agent.task_packs import TaskPackCatalog
 
 ArtifactResolver = Callable[[UUID], ArtifactRef]
 
@@ -93,6 +95,8 @@ class CompetitionRunService:
         artifact_id: UUID | None,
         scenario_input: Mapping[str, object],
     ) -> tuple[Task, TaskPack]:
+        from cyber_agent.task_packs import TaskPackCatalogError
+
         if not isinstance(request_text, str) or not request_text.strip():
             raise CompetitionServiceError(
                 "TASK_REQUEST_INVALID",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import secrets
 import shutil
@@ -15,6 +16,7 @@ import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlencode
@@ -25,6 +27,7 @@ from cyber_agent.api.workbench import create_workbench_app
 from cyber_agent.application.admin_console import AdminConsoleService
 from cyber_agent.application.artifact_upload import ArtifactUploadService
 from cyber_agent.application.run_management import CompetitionRunManager, InMemoryRunStore
+from cyber_agent.application.run_history import SQLiteRunHistory
 from cyber_agent.application.runtime_factory import (
     RealRuntimeFactory,
     SourceAuditExecutorProvider,
@@ -32,19 +35,21 @@ from cyber_agent.application.runtime_factory import (
 from cyber_agent.application.runtime_readiness import RuntimeReadinessService
 from cyber_agent.application.source_audit_budget import SourceAuditResourceBudget
 from cyber_agent.artifacts import ArtifactMaterializer, InMemoryArtifactStore
+from cyber_agent.audit_store import SQLiteAuditStore
 from cyber_agent.executor import UnavailableSourceWorkerGuard, WindowsSourceWorkerGuard
-from cyber_agent.model_gateway import ModelIoTraceStore
 from cyber_agent.task_packs import build_competition_task_pack_catalog
-from cyber_agent.task_packs.source_audit import SOURCE_AUDIT_VERIFIER_ID
+from cyber_agent.task_packs.source_audit import (
+    SOURCE_AUDIT_TASK_PACK_ID,
+    SOURCE_AUDIT_VERIFIER_ID,
+)
 from cyber_agent.task_packs.web_idor import WEB_IDOR_VERIFIER_ID
 from cyber_agent.tools import (
-    HttpRequestPlugin,
-    HypothesisValidatePlugin,
-    ProjectInventoryPlugin,
-    PythonDataflowPlugin,
     ToolRegistry,
+    build_competition_tool_registry,
+    expected_competition_tool_ids,
 )
 from cyber_agent.verification import SourceAuditVerifier, VerifierRegistry, WebIdorVerifier
+from cyber_agent.workbench import LocalWorkspaceManager
 from cyber_agent.workbench.adapters import ModelAdapterFactory
 from cyber_agent.workbench.capabilities import ModelCapabilityService
 from cyber_agent.workbench.credentials import CredentialStore, WindowsCredentialStore
@@ -54,8 +59,10 @@ from cyber_agent.workbench.endpoint_policy import (
     load_model_presets,
 )
 from cyber_agent.workbench.profiles import ModelProfileStore
-from cyber_agent.workbench.schemas import WorkbenchMode
+from cyber_agent.workbench.schemas import ReadinessState, WorkbenchMode
 from cyber_agent.workbench.store import WorkbenchStore
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -124,17 +131,22 @@ def build_local_server(
         database_path=data_root / "state.db",
         runtime_root=data_root,
     )
+    run_history = SQLiteRunHistory(database_path=data_root / "state.db")
+    asyncio.run(run_history.interrupt_active_runs())
+    asyncio.run(
+        run_history.purge_expired(
+            older_than=datetime.now(timezone.utc) - timedelta(days=30),
+        )
+    )
     profiles = ModelProfileStore(
         database=database,
         mode=WorkbenchMode.DEVELOPMENT,
         credentials=credentials,
     )
     endpoint_policy = ModelEndpointPolicy(resolver=SecureDohFallbackResolver())
-    model_io_traces = ModelIoTraceStore(capacity=100)
     adapter_factory = ModelAdapterFactory(
         credentials=credentials,
         endpoint_policy=endpoint_policy,
-        trace_store=model_io_traces,
     )
     capabilities = ModelCapabilityService(
         profiles=profiles,
@@ -157,6 +169,13 @@ def build_local_server(
         materializer=artifact_materializer,
         resource_budget=source_budget,
     )
+
+    # Initialize workspace manager for task isolation
+    workspace_manager = LocalWorkspaceManager(root=data_root / "workspaces")
+
+    # Initialize SQLite audit store for persistent decision trails
+    audit_store = SQLiteAuditStore(db_path=data_root / "audit.db")
+
     try:
         source_worker_guard = WindowsSourceWorkerGuard(budget=source_budget)
     except Exception:
@@ -168,6 +187,26 @@ def build_local_server(
         platform=("windows/job-object" if sys.platform == "win32" else "unsupported"),
     )
     asyncio.run(source_executor_provider.initialize())
+    def source_runtime_available() -> bool:
+        try:
+            return (
+                source_executor_provider.readiness(SOURCE_AUDIT_TASK_PACK_ID)
+                is ReadinessState.READY
+            )
+        except Exception:
+            return False
+
+    tools, tool_registration_failures = asyncio.run(
+        _build_tool_registry(
+            runtime_available=source_runtime_available,
+            docker_probe=probe_docker,
+        )
+    )
+    if tool_registration_failures:
+        logger.warning(
+            "tool registration incomplete missing_tool_ids=%s",
+            tool_registration_failures,
+        )
     runtime_factory = RealRuntimeFactory(
         profiles=profiles,
         capabilities=capabilities,
@@ -175,19 +214,23 @@ def build_local_server(
         executor_provider=source_executor_provider,
         catalog=catalog,
         artifact_resolver=artifact_upload.resolve,
+        tool_registry=tools,
+        docker_probe=probe_docker,
     )
     formal_run_manager = CompetitionRunManager(
         service=None,
         store=InMemoryRunStore(),
         runtime_preparer=runtime_factory,
+        history=run_history,
+        artifact_cleanup=artifact_store.delete,
     )
     runtime_readiness = RuntimeReadinessService(
         model_probe=capabilities.runtime_readiness,
         core_probe=runtime_factory.core_readiness,
         taskpack_ids=tuple(item.task_pack_id for item in catalog.list()),
         taskpack_probe=runtime_factory.taskpack_readiness,
+        taskpack_detail_probe=runtime_factory.taskpack_readiness_detail,
     )
-    tools = asyncio.run(_build_tool_registry(runtime_available=lambda: False))
     verifiers = _build_verifier_registry()
     admin_console = AdminConsoleService(
         profiles=profiles,
@@ -195,7 +238,6 @@ def build_local_server(
         task_packs=catalog,
         verifier_registry=verifiers,
         tool_registry=tools,
-        trace_store=model_io_traces,
     )
     token = launch_token or secrets.token_urlsafe(48)
     app = create_workbench_app(
@@ -211,11 +253,15 @@ def build_local_server(
     )
     app.state.real_runtime_factory = runtime_factory
     app.state.formal_run_manager = formal_run_manager
+    app.state.run_history = run_history
     app.state.source_audit_budget = source_budget
     app.state.source_artifact_store = artifact_store
     app.state.source_artifact_upload = artifact_upload
     app.state.source_worker_guard = source_worker_guard
-    app.state.model_io_traces = model_io_traces
+    app.state.workspace_manager = workspace_manager
+    app.state.audit_store = audit_store
+    app.state.tool_registry = tools
+    app.state.expected_tool_ids = expected_competition_tool_ids()
     return LocalServerBundle(
         app=app,
         host=DEFAULT_HOST,
@@ -228,22 +274,30 @@ def build_local_server(
 async def _build_tool_registry(
     *,
     runtime_available: Callable[[], bool],
-) -> ToolRegistry:
-    registry = ToolRegistry()
-    for plugin in (
-        HttpRequestPlugin(runtime_available=runtime_available),
-        ProjectInventoryPlugin(runtime_available=runtime_available),
-        PythonDataflowPlugin(runtime_available=runtime_available),
-        HypothesisValidatePlugin(runtime_available=runtime_available),
-    ):
-        await registry.register_checked(plugin)
-    return registry
+    docker_probe: Callable[[], tuple[bool, str]],
+) -> tuple[ToolRegistry, tuple[str, ...]]:
+    return await build_competition_tool_registry(
+        runtime_available=runtime_available,
+        docker_probe=docker_probe,
+    )
 
 
 def _build_verifier_registry() -> VerifierRegistry:
     registry = VerifierRegistry()
-    registry.register(WEB_IDOR_VERIFIER_ID, WebIdorVerifier())
-    registry.register(SOURCE_AUDIT_VERIFIER_ID, SourceAuditVerifier())
+    for verifier_id, verifier in (
+        (WEB_IDOR_VERIFIER_ID, WebIdorVerifier()),
+        (SOURCE_AUDIT_VERIFIER_ID, SourceAuditVerifier()),
+    ):
+        try:
+            registry.register(verifier_id, verifier)
+            logger.info("verifier registered verifier_id=%s", verifier_id)
+        except Exception as exc:
+            logger.error(
+                "verifier registration failed verifier_id=%s error=%s",
+                verifier_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
     return registry
 
 

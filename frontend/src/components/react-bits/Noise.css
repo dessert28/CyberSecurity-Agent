@@ -1,0 +1,11 @@
+.noise-overlay {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0.55;
+  mix-blend-mode: overlay;
+}

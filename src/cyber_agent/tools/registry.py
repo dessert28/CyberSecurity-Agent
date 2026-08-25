@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from dataclasses import dataclass
 from enum import Enum
 from threading import RLock
 
 from cyber_agent.contracts.ports import ToolPlugin
 from cyber_agent.contracts.tool import ToolHealth, ToolRef, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 
 class RegistryError(ValueError):
@@ -28,6 +32,7 @@ class RegistryStatus:
     tool_ref: ToolRef
     state: HealthState
     message: str = ""
+    last_health_exception: str = ""
 
 
 @dataclass(slots=True)
@@ -85,8 +90,12 @@ class ToolRegistry:
         await asyncio.gather(*(self._refresh_one(registration) for registration in registrations))
 
     async def _refresh_one(self, registration: _Registration) -> None:
+        exception_text = ""
         try:
             health = await registration.plugin.health_check()
+            exception_text = (
+                getattr(registration.plugin, "last_health_exception", None) or ""
+            )
             expected = ToolRef(tool_id=registration.spec.tool_id, version=registration.spec.version)
             if health.tool_ref != expected:
                 health = ToolHealth(
@@ -95,6 +104,7 @@ class ToolRegistry:
                     message="plugin health check returned a mismatched tool reference",
                 )
         except Exception as exc:  # plugin failure must not crash registry initialization
+            exception_text = traceback.format_exc()
             health = ToolHealth(
                 tool_ref=ToolRef(
                     tool_id=registration.spec.tool_id,
@@ -109,6 +119,20 @@ class ToolRegistry:
                 tool_ref=health.tool_ref,
                 state=state,
                 message=health.message,
+                last_health_exception=exception_text,
+            )
+        logger.info(
+            "tool health check tool_id=%s state=%s message=%s",
+            registration.spec.tool_id,
+            state.value,
+            health.message,
+        )
+        if state is not HealthState.HEALTHY:
+            logger.warning(
+                "tool health check failed tool_id=%s state=%s exception=%s",
+                registration.spec.tool_id,
+                state.value,
+                exception_text or health.message,
             )
 
     def candidates(self, capability: str) -> tuple[ToolSpec, ...]:
@@ -126,6 +150,17 @@ class ToolRegistry:
             if registration is None:
                 raise RegistryError("TOOL_NOT_REGISTERED", f"tool id {tool_id!r} is not registered")
             return registration.status
+
+    def all_statuses(self) -> tuple[RegistryStatus, ...]:
+        with self._lock:
+            return tuple(registration.status for registration in self._registrations.values())
+
+    def spec(self, tool_id: str) -> ToolSpec:
+        with self._lock:
+            registration = self._registrations.get(tool_id)
+            if registration is None:
+                raise RegistryError("TOOL_NOT_REGISTERED", f"tool id {tool_id!r} is not registered")
+            return registration.spec.model_copy(deep=True)
 
     def plugin(self, tool_id: str) -> ToolPlugin:
         with self._lock:

@@ -68,7 +68,6 @@
           <div class="actions">
             <button id="save-button" type="submit">保存配置</button>
             <button id="test-button" type="button" class="secondary">测试连接</button>
-            <button id="capability-test-button" type="button" class="secondary">验证结构化能力</button>
           </div>
         </form>
         <p id="operation-message" class="message" role="status" aria-live="polite"></p>
@@ -86,26 +85,6 @@
         <ul id="health-list" class="health-list" aria-live="polite"></ul>
       </section>
     </div>
-
-    <section class="panel trace-panel" aria-labelledby="model-trace-title">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">MODEL I/O DEBUGGER</p>
-          <h2 id="model-trace-title">模型调用调试</h2>
-          <p class="field-note trace-warning">Beta 模式：完整展示模型请求与响应正文，记录仅保存在当前进程内。</p>
-        </div>
-        <div class="trace-actions">
-          <button id="refresh-model-traces" type="button" class="secondary compact">刷新</button>
-          <button id="clear-model-traces" type="button" class="secondary compact danger-button">清空</button>
-        </div>
-      </div>
-      <div class="trace-layout">
-        <ol id="model-trace-list" class="trace-list" aria-label="最近模型调用"></ol>
-        <div id="model-trace-detail" class="trace-detail" aria-live="polite">
-          <div class="trace-empty">暂无模型调用记录。完成连接测试、结构化验证或正式任务后在此查看。</div>
-        </div>
-      </div>
-    </section>
 
     <section class="panel boundary" aria-labelledby="boundary-title">
       <p class="eyebrow">IMMUTABLE SECURITY BOUNDARY</p>

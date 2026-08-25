@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 from cyber_agent.application.competition_service import (
@@ -37,25 +38,31 @@ from cyber_agent.executor.controlled import ControlledExecutor
 from cyber_agent.executor.source_analysis import SourceAnalysisRunner, SourceWorkerGuard
 from cyber_agent.model_gateway import ModelCallCollector, TracingModelGateway
 from cyber_agent.planner.service import PlannerService
-from cyber_agent.task_packs import TaskPackCatalog, build_competition_task_pack_catalog
-from cyber_agent.task_packs.source_audit import (
+from cyber_agent.task_packs.source_audit.manifest import (
     SOURCE_AUDIT_TASK_PACK_ID,
     SOURCE_AUDIT_VERIFIER_ID,
 )
-from cyber_agent.task_packs.web_idor import WEB_IDOR_VERIFIER_ID
+from cyber_agent.task_packs.web_idor.manifest import WEB_IDOR_VERIFIER_ID
 from cyber_agent.tools.hypothesis_validate import HypothesisValidatePlugin
 from cyber_agent.tools.policy import PolicyGate
 from cyber_agent.tools.project_inventory import ProjectInventoryPlugin
 from cyber_agent.tools.python_dataflow import PythonDataflowPlugin
-from cyber_agent.tools.registry import HealthState, ToolRegistry
+from cyber_agent.tools.registry import HealthState, RegistryError, ToolRegistry
+
+if TYPE_CHECKING:
+    from cyber_agent.task_packs import TaskPackCatalog
 from cyber_agent.verification import SourceAuditVerifier, VerifierRegistry, WebIdorVerifier
 from cyber_agent.workbench.profiles import configuration_fingerprint
 from cyber_agent.workbench.schemas import (
     CapabilityProbeRecord,
     ModelRuntimeReadiness,
     ReadinessState,
+    TaskPackReadiness,
+    ToolReadinessView,
 )
 from cyber_agent.workbench.store import StoredModelProfile
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +304,8 @@ class RealRuntimeFactory:
         executor_provider: TaskPackExecutorProvider | None = None,
         catalog: TaskPackCatalog | None = None,
         artifact_resolver: ArtifactResolver | None = None,
+        tool_registry: ToolRegistry | None = None,
+        docker_probe: Callable[[], tuple[bool, str]] | None = None,
         planner_factory: Callable[[ModelGateway], PlannerService] = PlannerService,
         snapshot_builder: RuntimeSnapshotBuilder | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -305,8 +314,14 @@ class RealRuntimeFactory:
         self._capabilities = capabilities
         self._adapter_factory = adapter_factory
         self._executor_provider = executor_provider
-        self._catalog = catalog or build_competition_task_pack_catalog()
+        if catalog is None:
+            from cyber_agent.task_packs import build_competition_task_pack_catalog
+
+            catalog = build_competition_task_pack_catalog()
+        self._catalog = catalog
         self._artifact_resolver = artifact_resolver
+        self._tool_registry = tool_registry
+        self._docker_probe = docker_probe
         self._planner_factory = planner_factory
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._snapshot_builder = snapshot_builder or RuntimeSnapshotBuilder(clock=self._clock)
@@ -335,6 +350,118 @@ class RealRuntimeFactory:
             return ReadinessState.EXECUTOR_NOT_READY
         return state if isinstance(state, ReadinessState) else ReadinessState.EXECUTOR_NOT_READY
 
+    def taskpack_readiness_detail(self, task_pack_id: str) -> TaskPackReadiness:
+        """Full availability report: required tools, model capability, and reason."""
+
+        try:
+            manifest = self._catalog.get(task_pack_id)
+        except Exception:
+            return TaskPackReadiness(
+                task_pack_id=task_pack_id,
+                state=ReadinessState.TASKPACK_DISABLED,
+                reason_codes=(ReadinessState.TASKPACK_DISABLED,),
+                detail="TaskPack 未注册或已禁用",
+            )
+
+        provider_state = ReadinessState.READY
+        provider_detail = ""
+        if self._executor_provider is None:
+            provider_state = ReadinessState.EXECUTOR_NOT_READY
+            provider_detail = "执行器未注册"
+        else:
+            try:
+                provider_state = self._executor_provider.readiness(task_pack_id)
+            except Exception:
+                provider_state = ReadinessState.EXECUTOR_NOT_READY
+            if provider_state is not ReadinessState.READY:
+                provider_detail = "执行器未就绪"
+
+        tool_states: list[ToolReadinessView] = []
+        unhealthy_tools: list[str] = []
+        for tool_id in manifest.required_tools:
+            if self._tool_registry is None:
+                view = ToolReadinessView(
+                    tool_id=tool_id,
+                    state="unregistered",
+                    healthy=False,
+                    message="tool registry is unavailable",
+                )
+            else:
+                try:
+                    status = self._tool_registry.status(tool_id)
+                    healthy = status.state is HealthState.HEALTHY
+                    view = ToolReadinessView(
+                        tool_id=tool_id,
+                        state="healthy" if healthy else "unhealthy",
+                        healthy=healthy,
+                        message=status.message,
+                    )
+                except RegistryError:
+                    view = ToolReadinessView(
+                        tool_id=tool_id,
+                        state="unregistered",
+                        healthy=False,
+                        message="tool is not registered",
+                    )
+            tool_states.append(view)
+            if not view.healthy:
+                unhealthy_tools.append(tool_id)
+
+        model_ready = False
+        try:
+            model_readiness = self._capabilities.runtime_readiness()
+            model_ready = model_readiness.ready
+        except Exception:
+            model_ready = False
+
+        docker_required = False
+        if self._tool_registry is not None:
+            for tool_id in manifest.required_tools:
+                try:
+                    spec = self._tool_registry.spec(tool_id)
+                except RegistryError:
+                    continue
+                if spec.execution_profile is not None and (
+                    spec.execution_profile.runner is RunnerType.CONTAINER
+                ):
+                    docker_required = True
+                    break
+
+        docker_available = True
+        if docker_required:
+            if self._docker_probe is None:
+                docker_available = False
+            else:
+                try:
+                    docker_available, _ = self._docker_probe()
+                except Exception:
+                    docker_available = False
+
+        if provider_state is not ReadinessState.READY:
+            state = provider_state
+            detail_parts = [provider_detail or "执行器未就绪"]
+            if unhealthy_tools:
+                detail_parts.append(f"依赖工具未就绪：{', '.join(unhealthy_tools)}")
+            if docker_required and not docker_available:
+                detail_parts.append("Docker未就绪（该场景依赖容器执行）")
+            if not model_ready:
+                detail_parts.append("当前模型能力校验未完成")
+            detail = "；".join(detail_parts)
+        else:
+            state = ReadinessState.READY
+            detail = None
+
+        return TaskPackReadiness(
+            task_pack_id=task_pack_id,
+            state=state,
+            reason_codes=() if state is ReadinessState.READY else (state,),
+            required_tools=manifest.required_tools,
+            tool_states=tuple(tool_states),
+            model_capability_ready=model_ready,
+            docker_required=docker_required,
+            detail=detail,
+        )
+
     async def prepare(
         self,
         *,
@@ -357,6 +484,7 @@ class RealRuntimeFactory:
                     raise TypeError("adapter does not implement the model gateway port")
             except Exception as exc:
                 raise _admission_error(ReadinessState.ADAPTER_NOT_READY) from exc
+            await self._ensure_model_available(adapter)
 
             try:
                 model_call_collector = ModelCallCollector()
@@ -455,6 +583,25 @@ class RealRuntimeFactory:
                 await _close_adapter(adapter)
             raise
 
+    @staticmethod
+    async def _ensure_model_available(adapter: ModelGateway) -> None:
+        """Fail admission quickly when the configured endpoint is unreachable."""
+
+        try:
+            health = await adapter.health_check()
+        except Exception as exc:
+            raise RunManagementError(
+                "MODEL_ENDPOINT_UNAVAILABLE",
+                "The configured model endpoint is unavailable.",
+                status_code=503,
+            ) from exc
+        if not health.available:
+            raise RunManagementError(
+                "MODEL_ENDPOINT_UNAVAILABLE",
+                "The configured model endpoint is unavailable.",
+                status_code=503,
+            )
+
     def _capture_ready_identity(
         self,
     ) -> tuple[StoredModelProfile, CapabilityProbeRecord, _CapturedModelIdentity]:
@@ -551,10 +698,19 @@ class RealRuntimeFactory:
     def _build_verifier_registry() -> VerifierRegistry:
         try:
             registry = VerifierRegistry()
-            registry.register(WEB_IDOR_VERIFIER_ID, WebIdorVerifier())
-            registry.register(SOURCE_AUDIT_VERIFIER_ID, SourceAuditVerifier())
+            for verifier_id, verifier in (
+                (WEB_IDOR_VERIFIER_ID, WebIdorVerifier()),
+                (SOURCE_AUDIT_VERIFIER_ID, SourceAuditVerifier()),
+            ):
+                registry.register(verifier_id, verifier)
+                logger.info("runtime verifier registered verifier_id=%s", verifier_id)
             return registry
         except Exception as exc:
+            logger.error(
+                "runtime verifier registration failed error=%s",
+                type(exc).__name__,
+                exc_info=True,
+            )
             raise _admission_error(ReadinessState.REGISTRY_NOT_READY) from exc
 
     @staticmethod

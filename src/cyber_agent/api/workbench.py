@@ -23,13 +23,10 @@ from cyber_agent.application.admin_console import (
     AdminConsoleError,
     AdminConsoleService,
     AdminHealthResponse,
-    AdminModelTraceClearResult,
-    AdminModelTraceList,
     AdminModelConfigurationRequest,
     AdminModelConfigurationView,
     AdminProviderCatalog,
 )
-from cyber_agent.model_gateway.io_trace import ModelIoTrace
 from cyber_agent.application.run_management import (
     CompetitionRunManager,
     RunAcceptedResponse,
@@ -38,6 +35,7 @@ from cyber_agent.application.run_management import (
     RunManagementError,
     RunSummaryResponse,
 )
+from cyber_agent.application.run_history import RunHistoryListResponse
 from cyber_agent.application.runtime_readiness import RuntimeReadinessService
 from cyber_agent.application.presentation import (
     CompetitionPresentationService,
@@ -49,6 +47,7 @@ from cyber_agent.application.presentation import (
     project_dashboard,
 )
 from cyber_agent.reporting import ReportProjection
+from cyber_agent.tools import HealthState
 from cyber_agent.workbench.capabilities import ModelCapabilityService
 from cyber_agent.workbench.credentials import CredentialBackendError
 from cyber_agent.workbench.endpoint_policy import ModelPresetCatalog
@@ -62,6 +61,8 @@ from cyber_agent.workbench.profiles import (
 )
 from cyber_agent.workbench.schemas import (
     ActiveModelProfileRequest,
+    DebugToolHealthReport,
+    DebugToolListResponse,
     ModelCredentialRequest,
     ModelProfileCreateRequest,
     ModelProfileUpdateRequest,
@@ -69,6 +70,9 @@ from cyber_agent.workbench.schemas import (
     ReadinessState,
     RuntimeReadinessResponse,
     ShutdownRequest,
+    TaskPackReadiness,
+    ToolHealthDetailView,
+    ToolReadinessView,
     WorkbenchMode,
 )
 from cyber_agent.workbench.security import SessionManager
@@ -79,7 +83,7 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _API_DIRECTORY = Path(__file__).resolve().parent
 _STATIC_DIRECTORY = (_API_DIRECTORY / "static").resolve()
 _WORKBENCH_TEMPLATE = (
-    _API_DIRECTORY / "templates" / "workbench.html"
+    _API_DIRECTORY / "templates" / "workbench-react.html"
 ).read_text(encoding="utf-8")
 _ADMIN_TEMPLATE = (
     _API_DIRECTORY / "templates" / "admin.html"
@@ -360,9 +364,69 @@ def create_workbench_app(
     @app.get(
         "/api/v1/runtime-readiness",
         response_model=RuntimeReadinessResponse,
+        response_model_exclude_unset=True,
     )
     async def runtime_readiness_status() -> RuntimeReadinessResponse:
         return runtime_readiness.status()
+
+    @app.get(
+        "/api/v1/runtime-readiness/{task_pack_id}",
+        response_model=TaskPackReadiness,
+        response_model_exclude_unset=True,
+    )
+    async def taskpack_readiness_detail(task_pack_id: str) -> TaskPackReadiness:
+        return runtime_readiness.detail(task_pack_id)
+
+    @app.get(
+        "/debug/tools/list_all",
+        response_model=DebugToolListResponse,
+    )
+    async def debug_tools_list(request: Request) -> DebugToolListResponse:
+        registry = getattr(request.app.state, "tool_registry", None)
+        expected = tuple(getattr(request.app.state, "expected_tool_ids", ()))
+        registered: tuple[str, ...] = ()
+        statuses: tuple[ToolReadinessView, ...] = ()
+        if registry is not None:
+            all_statuses = registry.all_statuses()
+            registered = tuple(item.tool_ref.tool_id for item in all_statuses)
+            statuses = tuple(
+                ToolReadinessView(
+                    tool_id=item.tool_ref.tool_id,
+                    state="healthy"
+                    if item.state is HealthState.HEALTHY
+                    else "unhealthy",
+                    healthy=item.state is HealthState.HEALTHY,
+                    message=item.message,
+                )
+                for item in all_statuses
+            )
+        missing = tuple(tool_id for tool_id in expected if tool_id not in registered)
+        return DebugToolListResponse(
+            expected_tool_ids=expected,
+            registered_tool_ids=registered,
+            missing_tool_ids=missing,
+            tool_statuses=statuses,
+        )
+
+    @app.get(
+        "/debug/tools/health_report",
+        response_model=DebugToolHealthReport,
+    )
+    async def debug_tools_health_report(request: Request) -> DebugToolHealthReport:
+        registry = getattr(request.app.state, "tool_registry", None)
+        if registry is None:
+            return DebugToolHealthReport(tools=())
+        return DebugToolHealthReport(
+            tools=tuple(
+                ToolHealthDetailView(
+                    tool_id=item.tool_ref.tool_id,
+                    healthy=item.state is HealthState.HEALTHY,
+                    message=item.message,
+                    last_health_exception=item.last_health_exception or None,
+                )
+                for item in registry.all_statuses()
+            )
+        )
 
     @app.get(
         "/api/v1/dashboard",
@@ -413,40 +477,12 @@ def create_workbench_app(
         async def test_admin_connection(_: ShutdownRequest) -> AdminConnectionTestResult:
             return await admin_console.test_connection()
 
-        @app.post(
-            "/api/v1/admin/capability-test",
-            response_model=AdminConnectionTestResult,
-        )
-        async def test_admin_capability(_: ShutdownRequest) -> AdminConnectionTestResult:
-            return await admin_console.verify_structured_output()
-
         @app.get(
             "/api/v1/admin/health",
             response_model=AdminHealthResponse,
         )
         async def admin_health() -> AdminHealthResponse:
             return admin_console.health()
-
-        @app.get(
-            "/api/v1/admin/model-traces",
-            response_model=AdminModelTraceList,
-        )
-        async def admin_model_traces() -> AdminModelTraceList:
-            return admin_console.model_traces()
-
-        @app.get(
-            "/api/v1/admin/model-traces/{trace_id}",
-            response_model=ModelIoTrace,
-        )
-        async def admin_model_trace(trace_id: UUID) -> ModelIoTrace:
-            return admin_console.model_trace(trace_id)
-
-        @app.delete(
-            "/api/v1/admin/model-traces",
-            response_model=AdminModelTraceClearResult,
-        )
-        async def clear_admin_model_traces() -> AdminModelTraceClearResult:
-            return admin_console.clear_model_traces()
 
     if preset_catalog is not None:
 
@@ -513,6 +549,17 @@ def create_workbench_app(
             return ArtifactUploadResponse.from_ref(artifact)
 
     if run_manager is not None:
+
+        @app.get(
+            "/api/v1/runs",
+            response_model=RunHistoryListResponse,
+        )
+        async def list_runs(
+            limit: int = Query(default=20, ge=1, le=50),
+        ) -> RunHistoryListResponse:
+            return RunHistoryListResponse(
+                items=tuple(await run_manager.list_recent(limit=limit)),
+            )
 
         @app.post(
             "/api/v1/runs",
@@ -593,33 +640,44 @@ def _require_run_readiness(
     )
     if selected is None:
         state = ReadinessState.TASKPACK_DISABLED
+        detail = "TaskPack 未注册或已禁用"
     elif not readiness.model_ready or not readiness.core_ready:
         state = readiness.state
+        detail = selected.detail if selected.detail else None
     elif selected.state is not ReadinessState.READY:
         state = selected.state
+        detail = selected.detail
     elif not readiness.runtime_available:
         state = readiness.state
+        detail = selected.detail if selected.detail else None
     else:
         return
-    messages = {
-        ReadinessState.MODEL_NOT_READY: "The active model is not ready.",
-        ReadinessState.CREDENTIAL_MISSING: "The active model credential is unavailable.",
-        ReadinessState.CAPABILITY_STALE: "The active model capability proof is stale.",
-        ReadinessState.CAPABILITY_FAILED: "The active model capability proof failed.",
-        ReadinessState.ADAPTER_NOT_READY: "The formal model adapter is unavailable.",
-        ReadinessState.PLANNER_NOT_READY: "PlannerService is unavailable.",
-        ReadinessState.REGISTRY_NOT_READY: "The formal Runtime registry is unavailable.",
-        ReadinessState.POLICY_NOT_READY: "The formal Runtime policy is unavailable.",
-        ReadinessState.ARTIFACT_RUNTIME_NOT_READY: "The artifact Runtime is unavailable.",
-        ReadinessState.EXECUTOR_NOT_READY: "The selected TaskPack executor is unavailable.",
-        ReadinessState.TASKPACK_DISABLED: "The selected TaskPack is disabled.",
-        ReadinessState.RUNTIME_SNAPSHOT_CONFLICT: "The Runtime identity changed during admission.",
-    }
-    raise RunManagementError(
-        state.value,
-        messages.get(state, "The formal Runtime is unavailable."),
-        status_code=503,
-    )
+    if detail:
+        message = detail
+    elif state in {
+        ReadinessState.MODEL_NOT_READY,
+        ReadinessState.CREDENTIAL_MISSING,
+        ReadinessState.CAPABILITY_STALE,
+        ReadinessState.CAPABILITY_FAILED,
+    }:
+        message = "当前模型能力校验未完成"
+    else:
+        messages = {
+            ReadinessState.MODEL_NOT_READY: "当前模型能力校验未完成",
+            ReadinessState.CREDENTIAL_MISSING: "当前模型能力校验未完成",
+            ReadinessState.CAPABILITY_STALE: "当前模型能力校验未完成",
+            ReadinessState.CAPABILITY_FAILED: "当前模型能力校验未完成",
+            ReadinessState.ADAPTER_NOT_READY: "The formal model adapter is unavailable.",
+            ReadinessState.PLANNER_NOT_READY: "PlannerService is unavailable.",
+            ReadinessState.REGISTRY_NOT_READY: "The formal Runtime registry is unavailable.",
+            ReadinessState.POLICY_NOT_READY: "The formal Runtime policy is unavailable.",
+            ReadinessState.ARTIFACT_RUNTIME_NOT_READY: "The artifact Runtime is unavailable.",
+            ReadinessState.EXECUTOR_NOT_READY: "The selected TaskPack executor is unavailable.",
+            ReadinessState.TASKPACK_DISABLED: "TaskPack 未注册或已禁用",
+            ReadinessState.RUNTIME_SNAPSHOT_CONFLICT: "The Runtime identity changed during admission.",
+        }
+        message = messages.get(state, "The formal Runtime is unavailable.")
+    raise RunManagementError(state.value, message, status_code=503)
 
 
 async def _read_limited_body(request: Request, *, max_bytes: int) -> bytes:

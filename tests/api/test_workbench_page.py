@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi.testclient import TestClient
@@ -10,9 +11,15 @@ from cyber_agent.application.run_management import (
     RunAcceptedResponse,
     RunCreateRequest,
 )
+from cyber_agent.application.run_history import RunHistoryItem
 from cyber_agent.application.runtime_readiness import RuntimeReadinessService
 from cyber_agent.contracts.plan import RunStatus
-from cyber_agent.workbench.schemas import ModelRuntimeReadiness, ReadinessState
+from cyber_agent.workbench.schemas import (
+    ModelRuntimeReadiness,
+    ReadinessState,
+    TaskPackReadiness,
+    ToolReadinessView,
+)
 
 
 ORIGIN = "http://127.0.0.1:49831"
@@ -31,6 +38,19 @@ class RecordingRunManager:
 
     async def execute_run(self, run_id: UUID) -> None:
         self.executed.append(run_id)
+
+    async def list_recent(self, *, limit: int):
+        return (
+            RunHistoryItem(
+                run_id=RUN_ID,
+                task_pack="web.idor",
+                status=RunStatus.COMPLETED,
+                request_preview="Assess the authorized order API.",
+                request_text="Assess the authorized order API.",
+                created_at=datetime(2026, 8, 25, 10, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 8, 25, 10, 1, tzinfo=timezone.utc),
+            ),
+        )[:limit]
 
 
 def _browser(*, run_manager=None) -> TestClient:
@@ -71,14 +91,19 @@ def test_workbench_home_exposes_both_competition_scenarios() -> None:
     with browser:
         _exchange(browser)
         response = browser.get("/")
+        bundle = browser.get("/static/react/assets/index.js")
 
     assert response.status_code == 200
     assert "网络安全智能体工作台" in response.text
-    assert 'value="web.idor"' in response.text
-    assert 'value="source.audit.python"' in response.text
-    assert 'href="/static/workbench.css"' in response.text
-    assert 'src="/static/workbench.js"' in response.text
-    assert "<script>" not in response.text
+    assert 'href="/static/react/assets/workbench.css"' in response.text
+    assert 'src="/static/react/assets/index.js"' in response.text
+    assert '<div id="root">' in response.text
+    assert bundle.status_code == 200
+    assert "web.idor" in bundle.text
+    assert "source.audit.python" in bundle.text
+    assert "最近任务" in bundle.text
+    assert "重新开始" in bundle.text
+    assert '"/api/v1/runs?limit=20"' in bundle.text
 
 
 def test_workbench_static_assets_load_under_the_local_session_boundary() -> None:
@@ -109,9 +134,100 @@ def test_workbench_marks_missing_runtime_sources_instead_of_showing_mock_data() 
         sources = browser.get("/api/v1/runtime-data-sources")
 
     assert page.status_code == 200
-    assert "任务运行数据源尚未启用" in page.text
+    assert '<div id="root">' in page.text
     assert sources.status_code == 200
     assert sources.json()["runs"] == "unavailable"
+
+
+def test_workbench_lists_recent_runs_inside_the_local_session() -> None:
+    browser = _browser(run_manager=RecordingRunManager())
+    with browser:
+        _exchange(browser)
+        response = browser.get("/api/v1/runs?limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {
+            "run_id": str(RUN_ID),
+            "task_pack": "web.idor",
+            "status": "completed",
+            "request_preview": "Assess the authorized order API.",
+            "request_text": "Assess the authorized order API.",
+            "created_at": "2026-08-25T10:00:00Z",
+            "updated_at": "2026-08-25T10:01:00Z",
+            "error_code": None,
+            "schema_version": "1.0",
+        }
+    ]
+
+
+def test_workbench_run_submission_reports_specific_executor_reason() -> None:
+    detail = TaskPackReadiness(
+        task_pack_id="web.idor",
+        state=ReadinessState.EXECUTOR_NOT_READY,
+        reason_codes=(ReadinessState.EXECUTOR_NOT_READY,),
+        required_tools=("web.http_request",),
+        tool_states=(
+            ToolReadinessView(
+                tool_id="web.http_request",
+                state="unhealthy",
+                healthy=False,
+                message="container runtime unavailable",
+            ),
+        ),
+        model_capability_ready=True,
+        detail="依赖工具未就绪：web.http_request",
+    )
+    runtime_readiness = RuntimeReadinessService(
+        model_probe=lambda: ModelRuntimeReadiness(
+            ready=True,
+            state=ReadinessState.READY,
+            reason_codes=(),
+            capability_probe_ref="11111111-1111-4111-8111-111111111111",
+        ),
+        core_probe=lambda: ReadinessState.READY,
+        taskpack_ids=("web.idor", "source.audit.python"),
+        taskpack_probe=lambda task_pack_id: (
+            ReadinessState.EXECUTOR_NOT_READY
+            if task_pack_id == "web.idor"
+            else ReadinessState.READY
+        ),
+        taskpack_detail_probe=lambda task_pack_id: (
+            detail
+            if task_pack_id == "web.idor"
+            else TaskPackReadiness(
+                task_pack_id=task_pack_id,
+                state=ReadinessState.READY,
+                reason_codes=(),
+            )
+        ),
+    )
+    app = create_workbench_app(
+        launch_token=LAUNCH_TOKEN,
+        origin=ORIGIN,
+        run_manager=RecordingRunManager(),
+        runtime_readiness=runtime_readiness,
+    )
+    with TestClient(app, base_url=ORIGIN) as browser:
+        csrf = _exchange(browser)
+        response = browser.post(
+            "/api/v1/runs",
+            headers={
+                "Origin": ORIGIN,
+                "X-CSRF-Token": csrf,
+                "Content-Type": "application/json",
+            },
+            json={
+                "task_pack_id": "web.idor",
+                "request_text": "Assess the authorized order API for cross-tenant access.",
+                "artifact_id": None,
+                "scenario_input": {},
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "EXECUTOR_NOT_READY"
+    assert "依赖工具未就绪" in response.json()["error"]["message"]
 
 
 def test_workbench_run_request_uses_only_the_public_application_contract() -> None:

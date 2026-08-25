@@ -43,6 +43,7 @@ from cyber_agent.contracts.tool import (
 )
 from cyber_agent.executor.source_analysis import SourceAnalysisExecutionError
 
+from .health import ToolHealthMixin
 from .project_inventory import ProjectInventoryAnalyzer
 from .python_dataflow import DataflowHypothesis
 from .validation import ArgumentValidationError, validate_arguments
@@ -486,7 +487,7 @@ class HypothesisValidationHandler:
         )
 
 
-class HypothesisValidatePlugin:
+class HypothesisValidatePlugin(ToolHealthMixin):
     input_schema = {
         "type": "object",
         "properties": {
@@ -574,17 +575,13 @@ class HypothesisValidatePlugin:
         return self._spec.model_copy(deep=True)
 
     async def health_check(self) -> ToolHealth:
-        try:
-            available = bool(self._runtime_available())
-        except Exception:
-            available = False
-        return ToolHealth(
-            tool_ref=ToolRef(tool_id=HYPOTHESIS_VALIDATE_TOOL_ID, version="1.0.0"),
-            available=available,
-            message=(
-                "controlled source-analysis runtime available"
-                if available
-                else "controlled source-analysis runtime unavailable"
+        return self.probe_health(
+            probe=self._runtime_available,
+            success_message="controlled source-analysis runtime available",
+            failure_message="controlled source-analysis runtime unavailable",
+            tool_ref=ToolRef(
+                tool_id=HYPOTHESIS_VALIDATE_TOOL_ID,
+                version="1.0.0",
             ),
         )
 

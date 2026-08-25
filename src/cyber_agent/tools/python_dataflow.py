@@ -44,6 +44,7 @@ from cyber_agent.contracts.tool import (
     ToolSpec,
 )
 
+from .health import ToolHealthMixin
 from .project_inventory import ProjectInventoryAnalyzer, ProjectInventoryResult
 from .validation import ArgumentValidationError, validate_arguments
 
@@ -603,7 +604,7 @@ class PythonDataflowAnalyzer:
         return Path(_SOURCE_INPUT_PATH).read_bytes()
 
 
-class PythonDataflowPlugin:
+class PythonDataflowPlugin(ToolHealthMixin):
     """ToolPlugin boundary for the read-only SOURCE_ANALYSIS runner."""
 
     input_schema = {
@@ -705,17 +706,13 @@ class PythonDataflowPlugin:
         return self._spec.model_copy(deep=True)
 
     async def health_check(self) -> ToolHealth:
-        try:
-            available = bool(self._runtime_available())
-        except Exception:
-            available = False
-        return ToolHealth(
-            tool_ref=ToolRef(tool_id=PYTHON_DATAFLOW_TOOL_ID, version="1.0.0"),
-            available=available,
-            message=(
-                "source-analysis runtime available"
-                if available
-                else "source-analysis runtime unavailable"
+        return self.probe_health(
+            probe=self._runtime_available,
+            success_message="source-analysis runtime available",
+            failure_message="source-analysis runtime unavailable",
+            tool_ref=ToolRef(
+                tool_id=PYTHON_DATAFLOW_TOOL_ID,
+                version="1.0.0",
             ),
         )
 

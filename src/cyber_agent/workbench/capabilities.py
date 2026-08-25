@@ -14,7 +14,6 @@ from cyber_agent.workbench.adapters import AdapterFactoryError
 from cyber_agent.workbench.profiles import ModelProfileStore
 from cyber_agent.workbench.schemas import (
     CapabilityProbeRecord,
-    ModelConnectionResult,
     DockerStatusView,
     ModelCheckResult,
     ModelCheckStatus,
@@ -27,8 +26,6 @@ from cyber_agent.workbench.store import StoredModelProfile
 
 
 class CapabilityAdapter(Protocol):
-    async def probe_reply(self) -> bool: ...
-
     async def generate_structured(self, request: ModelRequest): ...
 
     async def aclose(self) -> None: ...
@@ -47,15 +44,11 @@ class CapabilityAdapterFactory(Protocol):
 
 _PROBE_SCHEMA = {
     "type": "object",
-    "properties": {
-        "ok": {"type": "boolean", "const": True},
-        "label": {"type": "string", "const": "probe"},
-        "items": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["ok", "label", "items"],
+    "properties": {"ok": {"type": "boolean", "const": True}},
+    "required": ["ok"],
     "additionalProperties": False,
 }
-_CAPABILITY_CONTRACT_VERSION = "structured-output/v2"
+_CAPABILITY_CONTRACT_VERSION = "structured-output/v1"
 _DEFAULT_PROBE_TTL = timedelta(minutes=30)
 _MIN_PROBE_TTL = timedelta(minutes=1)
 _MAX_PROBE_TTL = timedelta(days=1)
@@ -102,22 +95,16 @@ class ModelCapabilityService:
                         purpose=ModelPurpose.TASK_UNDERSTANDING,
                         system_instructions=(
                             "Return only one JSON object that matches the supplied schema. "
-                            "Set ok to true, label to probe, and items to [\"ready\"]. "
-                            "Return raw JSON without Markdown or explanations. "
-                            "Do not call tools or include additional fields."
+                            "Set ok to true. Do not call tools or include additional fields."
                         ),
                         context={"probe": "structured_output"},
                         output_schema=_PROBE_SCHEMA,
                         reasoning_effort=ReasoningEffort.LOW,
-                        max_output_tokens=64,
+                        max_output_tokens=2048,
                         timeout_seconds=30,
                     )
                 )
-                if response.schema_valid and response.data == {
-                    "ok": True,
-                    "label": "probe",
-                    "items": ["ready"],
-                }:
+                if response.schema_valid and response.data == {"ok": True}:
                     endpoint_fingerprint = (
                         self._adapter_factory.capability_probe_fingerprint(
                             profile,
@@ -170,49 +157,6 @@ class ModelCapabilityService:
             expires_at=probe.expires_at,
             probe_id=probe.probe_id,
             active=view.active,
-        )
-
-    async def check_connection(self, profile_id: UUID) -> ModelConnectionResult:
-        """Confirm a provider returns a final reply without changing runtime readiness."""
-
-        profile = self._profiles.get(profile_id)
-        adapter: CapabilityAdapter | None = None
-        passed = False
-        code = "MODEL_CONNECTION_FAILED"
-        message = "The model connection check failed."
-        if not profile.credential_present:
-            code = "MODEL_CREDENTIAL_MISSING"
-            message = "Save an API credential before checking this model profile."
-        else:
-            try:
-                adapter = self._adapter_factory.create(profile)
-                if await adapter.probe_reply():
-                    passed = True
-                    code = "MODEL_CONNECTION_PASSED"
-                    message = "The model returned a non-empty connection probe reply."
-                else:
-                    code = "MODEL_REPLY_EMPTY"
-                    message = "The model did not return a non-empty final reply."
-            except CyberAgentError as exc:
-                code = exc.error.code
-                message = exc.error.safe_message
-            except AdapterFactoryError:
-                code = "MODEL_CHECK_SETUP_FAILED"
-                message = "The model profile could not be prepared for a connection check."
-            except Exception:
-                code = "MODEL_CONNECTION_FAILED"
-                message = "The model connection check failed safely."
-            finally:
-                if adapter is not None:
-                    try:
-                        await adapter.aclose()
-                    except Exception:
-                        pass
-        return ModelConnectionResult(
-            profile_id=profile_id,
-            passed=passed,
-            code=code,
-            message=message,
         )
 
     def runtime_readiness(self, profile_id: UUID | None = None) -> ModelRuntimeReadiness:

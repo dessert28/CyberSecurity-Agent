@@ -1,6 +1,9 @@
 """Trusted scenario plugins for the generic orchestration core."""
 
 from .catalog import (
+    IncidentLoginChainScenarioInput,
+    PwnRet2winScenarioInput,
+    ReverseKeycheckScenarioInput,
     SourceAuditScenarioInput,
     TaskPackCatalog,
     TaskPackCatalogError,
@@ -8,6 +11,9 @@ from .catalog import (
 )
 
 __all__ = [
+    "IncidentLoginChainScenarioInput",
+    "PwnRet2winScenarioInput",
+    "ReverseKeycheckScenarioInput",
     "SourceAuditScenarioInput",
     "TaskPackCatalog",
     "TaskPackCatalogError",

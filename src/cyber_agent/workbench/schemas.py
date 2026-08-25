@@ -164,15 +164,6 @@ class ModelCheckResult(WorkbenchModel):
     _expires_at = field_validator("expires_at")(require_utc_timestamp.__func__)
 
 
-class ModelConnectionResult(WorkbenchModel):
-    """Ephemeral evidence that a configured model returned a final reply."""
-
-    profile_id: UUID
-    passed: bool
-    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,127}$")
-    message: str = Field(min_length=1, max_length=2_000)
-
-
 class CapabilityProbeRecord(WorkbenchModel):
     """Immutable evidence that a specific model identity passed or failed a probe."""
 
@@ -226,10 +217,28 @@ class ModelRuntimeReadiness(WorkbenchModel):
         return self
 
 
+class ToolReadinessView(WorkbenchModel):
+    tool_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
+    state: Literal["healthy", "unhealthy", "unregistered"]
+    healthy: bool
+    message: str = Field(default="", max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_state(self) -> "ToolReadinessView":
+        if self.healthy != (self.state == "healthy"):
+            raise ValueError("tool health flag contradicts state")
+        return self
+
+
 class TaskPackReadiness(WorkbenchModel):
     task_pack_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     state: ReadinessState
     reason_codes: tuple[ReadinessState, ...]
+    required_tools: tuple[str, ...] = Field(default_factory=tuple)
+    tool_states: tuple[ToolReadinessView, ...] = Field(default_factory=tuple)
+    model_capability_ready: bool | None = None
+    docker_required: bool | None = None
+    detail: str | None = Field(default=None, max_length=2_000)
 
     @model_validator(mode="after")
     def validate_state(self) -> "TaskPackReadiness":
@@ -238,6 +247,24 @@ class TaskPackReadiness(WorkbenchModel):
         if self.state is not ReadinessState.READY and self.state not in self.reason_codes:
             raise ValueError("unready taskpack must include its state as a reason code")
         return self
+
+
+class DebugToolListResponse(WorkbenchModel):
+    expected_tool_ids: tuple[str, ...]
+    registered_tool_ids: tuple[str, ...]
+    missing_tool_ids: tuple[str, ...]
+    tool_statuses: tuple[ToolReadinessView, ...]
+
+
+class ToolHealthDetailView(WorkbenchModel):
+    tool_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
+    healthy: bool
+    message: str = Field(default="", max_length=2_000)
+    last_health_exception: str | None = Field(default=None, max_length=20_000)
+
+
+class DebugToolHealthReport(WorkbenchModel):
+    tools: tuple[ToolHealthDetailView, ...]
 
 
 class RuntimeReadinessResponse(WorkbenchModel):

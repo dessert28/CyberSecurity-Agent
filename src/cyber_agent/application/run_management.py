@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -25,14 +25,16 @@ from cyber_agent.contracts.evidence import VerificationVerdict
 from cyber_agent.contracts.model import ModelCallRef, ModelCallStatus
 from cyber_agent.contracts.plan import RunStatus, Step, StepStatus
 from cyber_agent.contracts.task import ScopePolicy, ScopeTarget, TargetKind, Task
-from cyber_agent.task_packs.catalog import SourceAuditScenarioInput
-from cyber_agent.task_packs.source_audit import SOURCE_AUDIT_TASK_PACK_ID
-from cyber_agent.task_packs.web_idor import (
+from cyber_agent.task_packs.source_audit.manifest import SOURCE_AUDIT_TASK_PACK_ID
+from cyber_agent.task_packs.web_idor.manifest import (
     WEB_IDOR_TASK_PACK_ID,
     WEB_IDOR_TOOL_ID,
-    WebIdorStepBinding,
 )
+from cyber_agent.task_packs.web_idor.config import WebIdorStepBinding
 from cyber_agent.workbench.schemas import RuntimeIdentityProjection
+
+if TYPE_CHECKING:
+    from cyber_agent.task_packs.catalog import SourceAuditScenarioInput
 
 
 class RunCreateRequest(StrictModel):
@@ -76,6 +78,22 @@ class RunAuditResponse(StrictModel):
     run_id: UUID
     after_sequence: int = Field(ge=0)
     events: tuple[AuditRecord, ...]
+
+
+class RunHistoryPort(Protocol):
+    async def save(
+        self,
+        record: ManagedRunRecord,
+        *,
+        summary: RunSummaryResponse,
+        audit_events: tuple[AuditRecord, ...],
+    ) -> None: ...
+
+    async def get_summary(self, run_id: UUID) -> RunSummaryResponse: ...
+
+    async def get_audit(self, run_id: UUID, *, after_sequence: int) -> RunAuditResponse: ...
+
+    async def list_recent(self, *, limit: int): ...
 
 
 class WebRunScenarioInput(StrictModel):
@@ -161,6 +179,8 @@ class RunStorePort(Protocol):
 
     async def get(self, run_id: UUID) -> ManagedRunRecord: ...
 
+    async def list_recent(self, *, limit: int) -> tuple[ManagedRunRecord, ...]: ...
+
 
 class InMemoryRunStore:
     """Process-local RunStore implementation with per-record isolation."""
@@ -219,6 +239,17 @@ class InMemoryRunStore:
                 ) from exc
             return copy.deepcopy(record)
 
+    async def list_recent(self, *, limit: int) -> tuple[ManagedRunRecord, ...]:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        async with self._lock:
+            records = sorted(
+                self._records.values(),
+                key=lambda record: record.created_at,
+                reverse=True,
+            )[:limit]
+            return tuple(copy.deepcopy(record) for record in records)
+
 
 class CompetitionRunManager:
     """Admit a safe request, execute it, and expose polling read models."""
@@ -229,6 +260,8 @@ class CompetitionRunManager:
         service: CompetitionRunServicePort | None,
         store: RunStorePort,
         runtime_preparer: RuntimePreparationPort | None = None,
+        history: RunHistoryPort | None = None,
+        artifact_cleanup: Callable[[UUID], Awaitable[None]] | None = None,
         run_id_factory=uuid4,
         clock=None,
     ) -> None:
@@ -244,6 +277,8 @@ class CompetitionRunManager:
         self._service = service
         self._store = store
         self._runtime_preparer = runtime_preparer
+        self._history = history
+        self._artifact_cleanup = artifact_cleanup
         self._run_id_factory = run_id_factory
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._prepared_contexts: dict[UUID, PreparedRuntimeContextPort] = {}
@@ -330,6 +365,7 @@ class CompetitionRunManager:
             runtime_snapshot=snapshot,
         )
         try:
+            await self._save_history(record)
             await self._store.create(record)
         except Exception:
             await _close_context(context)
@@ -351,6 +387,7 @@ class CompetitionRunManager:
             raise
         if record is None:
             return
+        await self._save_history(record)
         context = await self._take_prepared_context(run_id)
         try:
             if record.runtime_snapshot is not None:
@@ -391,34 +428,66 @@ class CompetitionRunManager:
             finally:
                 await _close_context(context)
         await self._store.save(record)
+        await self._save_history(record)
+        if record.artifact_id is not None and record.status in _TERMINAL_RUN_STATUSES:
+            await self._cleanup_artifact(record.artifact_id)
 
     async def get_summary(self, run_id: UUID) -> RunSummaryResponse:
-        record = await self._store.get(run_id)
-        outcome = record.outcome
-        task = outcome.task.model_copy(deep=True) if outcome is not None else None
-        audit_records = _audit_records(outcome)
-        evidence = tuple(outcome.evidence) if outcome is not None else ()
-        verdicts = tuple(outcome.verdicts) if outcome is not None else ()
-        return RunSummaryResponse(
-            run_id=record.run_id,
-            core_run_id=outcome.run.run_id if outcome is not None else None,
-            task=task,
-            task_pack=record.task_pack_id,
-            status=record.status,
-            current_step=_current_step(outcome),
-            verdict=verdicts[-1].model_copy(deep=True) if verdicts else None,
-            evidence_count=len(evidence),
-            audit_count=len(audit_records),
-            error_code=record.error_code,
-            runtime_identity=(
-                record.runtime_snapshot.public_identity()
-                if record.runtime_snapshot is not None
-                else None
-            ),
-            model_call_refs=tuple(
-                item.model_copy(deep=True) for item in record.model_call_refs
-            ),
+        try:
+            record = await self._store.get(run_id)
+        except RunManagementError as exc:
+            if exc.code != "RUN_NOT_FOUND" or self._history is None:
+                raise
+            try:
+                return await self._history.get_summary(run_id)
+            except Exception as history_error:
+                from cyber_agent.application.run_history import RunHistoryError
+
+                if not isinstance(history_error, RunHistoryError):
+                    raise
+                raise RunManagementError(
+                    "RUN_NOT_FOUND",
+                    "The requested run was not found.",
+                    status_code=404,
+                ) from history_error
+        return _summary_from_record(record)
+
+    async def list_recent(self, *, limit: int):
+        if self._history is not None:
+            return await self._history.list_recent(limit=limit)
+        from cyber_agent.application.run_history import RunHistoryItem
+
+        records = await self._store.list_recent(limit=limit)
+        return tuple(
+            RunHistoryItem(
+                run_id=record.run_id,
+                task_pack=record.task_pack_id,
+                status=record.status,
+                request_preview=record.request_text[:280],
+                request_text=record.request_text,
+                created_at=record.created_at,
+                updated_at=record.created_at,
+                error_code=record.error_code,
+            )
+            for record in records
         )
+
+    async def _save_history(self, record: ManagedRunRecord) -> None:
+        if self._history is None:
+            return
+        await self._history.save(
+            record,
+            summary=_summary_from_record(record),
+            audit_events=_audit_records(record.outcome),
+        )
+
+    async def _cleanup_artifact(self, artifact_id: UUID) -> None:
+        if self._artifact_cleanup is None:
+            return
+        try:
+            await self._artifact_cleanup(artifact_id)
+        except Exception:
+            pass
 
     async def _take_prepared_context(
         self,
@@ -444,7 +513,23 @@ class CompetitionRunManager:
                 "after_sequence must not be negative.",
                 status_code=422,
             )
-        record = await self._store.get(run_id)
+        try:
+            record = await self._store.get(run_id)
+        except RunManagementError as exc:
+            if exc.code != "RUN_NOT_FOUND" or self._history is None:
+                raise
+            try:
+                return await self._history.get_audit(run_id, after_sequence=after_sequence)
+            except Exception as history_error:
+                from cyber_agent.application.run_history import RunHistoryError
+
+                if not isinstance(history_error, RunHistoryError):
+                    raise
+                raise RunManagementError(
+                    "RUN_NOT_FOUND",
+                    "The requested run was not found.",
+                    status_code=404,
+                ) from history_error
         events = tuple(
             item.model_copy(deep=True)
             for item in _audit_records(record.outcome)
@@ -455,6 +540,45 @@ class CompetitionRunManager:
             after_sequence=after_sequence,
             events=events,
         )
+
+
+def _summary_from_record(record: ManagedRunRecord) -> RunSummaryResponse:
+    outcome = record.outcome
+    task = outcome.task.model_copy(deep=True) if outcome is not None else None
+    audit_records = _audit_records(outcome)
+    evidence = tuple(outcome.evidence) if outcome is not None else ()
+    verdicts = tuple(outcome.verdicts) if outcome is not None else ()
+    error_code = record.error_code
+    if error_code is None and outcome is not None:
+        interruption = getattr(outcome, "error", None)
+        termination_reason = getattr(getattr(outcome, "run", None), "termination_reason", None)
+        error_code = getattr(interruption or termination_reason, "code", None)
+    return RunSummaryResponse(
+        run_id=record.run_id,
+        core_run_id=outcome.run.run_id if outcome is not None else None,
+        task=task,
+        task_pack=record.task_pack_id,
+        status=record.status,
+        current_step=_current_step(outcome),
+        verdict=verdicts[-1].model_copy(deep=True) if verdicts else None,
+        evidence_count=len(evidence),
+        audit_count=len(audit_records),
+        error_code=error_code,
+        runtime_identity=(
+            record.runtime_snapshot.public_identity()
+            if record.runtime_snapshot is not None
+            else None
+        ),
+        model_call_refs=tuple(item.model_copy(deep=True) for item in record.model_call_refs),
+    )
+
+
+_TERMINAL_RUN_STATUSES = {
+    RunStatus.COMPLETED,
+    RunStatus.FAILED,
+    RunStatus.BLOCKED,
+    RunStatus.CANCELLED,
+}
 
 
 def _normalize_scenario_input(
@@ -476,6 +600,8 @@ def _normalize_scenario_input(
             "bindings": [item.model_dump(mode="json") for item in selected.bindings],
         }
     if task_pack_id == SOURCE_AUDIT_TASK_PACK_ID:
+        from cyber_agent.task_packs.catalog import SourceAuditScenarioInput
+
         try:
             selected = SourceAuditScenarioInput.model_validate(scenario_input)
         except ValidationError as exc:

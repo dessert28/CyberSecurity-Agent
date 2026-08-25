@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -11,6 +12,8 @@ from cyber_agent.workbench.schemas import (
     RuntimeReadinessResponse,
     TaskPackReadiness,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeReadinessService:
@@ -23,6 +26,7 @@ class RuntimeReadinessService:
         core_probe: Callable[[], ReadinessState],
         taskpack_ids: tuple[str, ...],
         taskpack_probe: Callable[[str], ReadinessState],
+        taskpack_detail_probe: Callable[[str], TaskPackReadiness] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not taskpack_ids or len(taskpack_ids) != len(set(taskpack_ids)):
@@ -31,6 +35,7 @@ class RuntimeReadinessService:
         self._core_probe = core_probe
         self._taskpack_ids = taskpack_ids
         self._taskpack_probe = taskpack_probe
+        self._taskpack_detail_probe = taskpack_detail_probe
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def status(self) -> RuntimeReadinessResponse:
@@ -89,16 +94,61 @@ class RuntimeReadinessService:
             return ReadinessState.REGISTRY_NOT_READY
 
     def _taskpack_status(self, taskpack_id: str) -> TaskPackReadiness:
+        if self._taskpack_detail_probe is not None:
+            try:
+                item = self._taskpack_detail_probe(taskpack_id)
+            except Exception as exc:
+                logger.warning(
+                    "TaskPack readiness detail probe failed taskpack_id=%s error=%s",
+                    taskpack_id,
+                    type(exc).__name__,
+                )
+                item = None
+            if isinstance(item, TaskPackReadiness) and item.task_pack_id == taskpack_id:
+                self._log_unavailable(taskpack_id, item)
+                return item
         try:
             state = self._taskpack_probe(taskpack_id)
             if not isinstance(state, ReadinessState):
                 state = ReadinessState.EXECUTOR_NOT_READY
         except Exception:
             state = ReadinessState.EXECUTOR_NOT_READY
-        return TaskPackReadiness(
+        item = TaskPackReadiness(
             task_pack_id=taskpack_id,
             state=state,
             reason_codes=() if state is ReadinessState.READY else (state,),
+        )
+        self._log_unavailable(taskpack_id, item)
+        return item
+
+    def detail(self, task_pack_id: str) -> TaskPackReadiness:
+        """Return the full availability report for one TaskPack."""
+
+        if task_pack_id in self._taskpack_ids:
+            return self._taskpack_status(task_pack_id)
+        item = TaskPackReadiness(
+            task_pack_id=task_pack_id,
+            state=ReadinessState.TASKPACK_DISABLED,
+            reason_codes=(ReadinessState.TASKPACK_DISABLED,),
+            detail="TaskPack 未注册或已禁用",
+        )
+        self._log_unavailable(task_pack_id, item)
+        return item
+
+    @staticmethod
+    def _log_unavailable(taskpack_id: str, item: TaskPackReadiness) -> None:
+        if item.state is ReadinessState.READY:
+            return
+        unhealthy_tools = tuple(tool.tool_id for tool in item.tool_states if not tool.healthy)
+        logger.warning(
+            "TaskPack executor unavailable taskpack_id=%s state=%s reason_codes=%s "
+            "unhealthy_tools=%s model_capability_ready=%s detail=%s",
+            taskpack_id,
+            item.state.value,
+            tuple(reason.value for reason in item.reason_codes),
+            unhealthy_tools,
+            item.model_capability_ready,
+            item.detail,
         )
 
     @staticmethod

@@ -44,6 +44,7 @@ from cyber_agent.contracts.tool import (
     ToolSpec,
 )
 
+from .health import ToolHealthMixin
 from .validation import ArgumentValidationError, validate_arguments
 
 PROJECT_INVENTORY_TOOL_ID = "source.project_inventory"
@@ -538,7 +539,7 @@ class ProjectInventoryAnalyzer:
         return Path(_SOURCE_INPUT_PATH).read_bytes()
 
 
-class ProjectInventoryPlugin:
+class ProjectInventoryPlugin(ToolHealthMixin):
     """ToolPlugin boundary for the dedicated offline source-analysis runner."""
 
     input_schema = {
@@ -632,17 +633,13 @@ class ProjectInventoryPlugin:
         return self._spec.model_copy(deep=True)
 
     async def health_check(self) -> ToolHealth:
-        try:
-            available = bool(self._runtime_available())
-        except Exception:
-            available = False
-        return ToolHealth(
-            tool_ref=ToolRef(tool_id=PROJECT_INVENTORY_TOOL_ID, version="1.0.0"),
-            available=available,
-            message=(
-                "source-analysis runtime available"
-                if available
-                else "source-analysis runtime unavailable"
+        return self.probe_health(
+            probe=self._runtime_available,
+            success_message="source-analysis runtime available",
+            failure_message="source-analysis runtime unavailable",
+            tool_ref=ToolRef(
+                tool_id=PROJECT_INVENTORY_TOOL_ID,
+                version="1.0.0",
             ),
         )
 

@@ -1,5 +1,11 @@
 """Tool plugin implementation boundary."""
 
+from .catalog import (
+    ToolCatalogEntry,
+    build_competition_tool_registry,
+    competition_tool_catalog,
+    expected_competition_tool_ids,
+)
 from .policy import BudgetUsage, PolicyGate, SocketResolver, StaticResolver
 from .hypothesis_validate import (
     HYPOTHESIS_VALIDATE_CAPABILITY,
@@ -8,6 +14,19 @@ from .hypothesis_validate import (
     HypothesisValidationHandler,
     HypothesisValidationResult,
 )
+from .incident_log import (
+    INCIDENT_LOG_INVENTORY_CAPABILITY,
+    INCIDENT_LOG_INVENTORY_TOOL_ID,
+    INCIDENT_LOG_SEARCH_CAPABILITY,
+    INCIDENT_LOG_SEARCH_TOOL_ID,
+    IncidentLogAnalyzer,
+    IncidentLogError,
+    IncidentLogInventoryPlugin,
+    IncidentLogSearchPlugin,
+    LogEventRecord,
+    LogInventoryResult,
+    LogSearchResult,
+)
 from .project_inventory import (
     PROJECT_INVENTORY_CAPABILITY,
     PROJECT_INVENTORY_TOOL_ID,
@@ -15,6 +34,19 @@ from .project_inventory import (
     ProjectInventoryError,
     ProjectInventoryPlugin,
     ProjectInventoryResult,
+)
+from .pwn_binary import (
+    PWN_BINARY_PROPERTIES_CAPABILITY,
+    PWN_BINARY_PROPERTIES_TOOL_ID,
+    BinaryPropertiesAnalyzer,
+    BinaryPropertiesPlugin,
+    BinaryPropertiesResult,
+)
+from .pwn_interaction import (
+    PWN_PROCESS_INTERACTION_CAPABILITY,
+    PWN_PROCESS_INTERACTION_TOOL_ID,
+    ProcessInteractionPlugin,
+    ProcessInteractionResult,
 )
 from .python_dataflow import (
     PYTHON_DATAFLOW_CAPABILITY,
@@ -26,6 +58,20 @@ from .python_dataflow import (
     PythonDataflowPlugin,
 )
 from .registry import HealthState, RegistryError, RegistryStatus, ToolRegistry
+from .reverse_run import (
+    REVERSE_RUN_VERIFY_CAPABILITY,
+    REVERSE_RUN_VERIFY_TOOL_ID,
+    ReverseRunPlugin,
+    RunVerifyResult,
+)
+from .reverse_static import (
+    REVERSE_STATIC_EXTRACT_CAPABILITY,
+    REVERSE_STATIC_EXTRACT_TOOL_ID,
+    ReverseStaticAnalyzer,
+    ReverseStaticError,
+    ReverseStaticPlugin,
+    StaticExtractResult,
+)
 from .validation import ArgumentValidationError, validate_arguments
 from .web import (
     EndpointDiscoveryPlugin,
@@ -36,7 +82,12 @@ from .web import (
 
 __all__ = [
     "ArgumentValidationError",
+    "BinaryPropertiesAnalyzer",
+    "BinaryPropertiesPlugin",
+    "BinaryPropertiesResult",
     "BudgetUsage",
+    "DataflowAnalysisResult",
+    "DataflowHypothesis",
     "EndpointDiscoveryPlugin",
     "HealthState",
     "HttpRequestPlugin",
@@ -45,26 +96,55 @@ __all__ = [
     "HypothesisValidatePlugin",
     "HypothesisValidationHandler",
     "HypothesisValidationResult",
+    "INCIDENT_LOG_INVENTORY_CAPABILITY",
+    "INCIDENT_LOG_INVENTORY_TOOL_ID",
+    "INCIDENT_LOG_SEARCH_CAPABILITY",
+    "INCIDENT_LOG_SEARCH_TOOL_ID",
+    "IncidentLogAnalyzer",
+    "IncidentLogError",
+    "IncidentLogInventoryPlugin",
+    "IncidentLogSearchPlugin",
+    "LogEventRecord",
+    "LogInventoryResult",
+    "LogSearchResult",
     "OpenApiAnalyzePlugin",
-    "PYTHON_DATAFLOW_CAPABILITY",
-    "PYTHON_DATAFLOW_TOOL_ID",
+    "PolicyGate",
+    "ProcessInteractionPlugin",
+    "ProcessInteractionResult",
     "PROJECT_INVENTORY_CAPABILITY",
     "PROJECT_INVENTORY_TOOL_ID",
-    "PolicyGate",
-    "DataflowAnalysisResult",
-    "DataflowHypothesis",
     "ProjectInventoryAnalyzer",
     "ProjectInventoryError",
     "ProjectInventoryPlugin",
     "ProjectInventoryResult",
+    "PWN_BINARY_PROPERTIES_CAPABILITY",
+    "PWN_BINARY_PROPERTIES_TOOL_ID",
+    "PWN_PROCESS_INTERACTION_CAPABILITY",
+    "PWN_PROCESS_INTERACTION_TOOL_ID",
+    "PYTHON_DATAFLOW_CAPABILITY",
+    "PYTHON_DATAFLOW_TOOL_ID",
     "PythonDataflowAnalyzer",
     "PythonDataflowError",
     "PythonDataflowPlugin",
     "RegistryError",
     "RegistryStatus",
+    "REVERSE_RUN_VERIFY_CAPABILITY",
+    "REVERSE_RUN_VERIFY_TOOL_ID",
+    "REVERSE_STATIC_EXTRACT_CAPABILITY",
+    "REVERSE_STATIC_EXTRACT_TOOL_ID",
+    "ReverseRunPlugin",
+    "ReverseStaticAnalyzer",
+    "ReverseStaticError",
+    "ReverseStaticPlugin",
+    "RunVerifyResult",
     "SocketResolver",
+    "StaticExtractResult",
     "StaticResolver",
+    "ToolCatalogEntry",
     "ToolRegistry",
+    "build_competition_tool_registry",
     "built_in_web_plugins",
+    "competition_tool_catalog",
+    "expected_competition_tool_ids",
     "validate_arguments",
 ]

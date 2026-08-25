@@ -32,6 +32,7 @@ from cyber_agent.contracts.tool import (
 )
 
 from .validation import ArgumentValidationError, validate_arguments
+from .health import ToolHealthMixin
 
 
 WEB_TOOLS_IMAGE = "registry.local/cyber-agent/web-tools@sha256:" + "8c4f5bbf4bc9323386112038e41b6fd89c9589178068a57d4e55f88d09fba221"
@@ -43,7 +44,7 @@ DEFAULT_RESOURCES = ResourceLimits(
 )
 
 
-class _WebPlugin:
+class _WebPlugin(ToolHealthMixin):
     tool_id: str
     entrypoint_module: str
     input_schema: dict[str, Any]
@@ -56,8 +57,10 @@ class _WebPlugin:
         *,
         runtime_available: Callable[[], bool] | None = None,
         image: str = WEB_TOOLS_IMAGE,
+        docker_probe: Callable[[], tuple[bool, str]] | None = None,
     ) -> None:
         self._runtime_available = runtime_available or (lambda: False)
+        self._docker_probe = docker_probe
         self._image = image
         self._pending: dict[UUID, ToolInvocation] = {}
         self._spec = self._build_spec()
@@ -95,14 +98,15 @@ class _WebPlugin:
         return self._spec.model_copy(deep=True)
 
     async def health_check(self) -> ToolHealth:
-        try:
-            available = bool(self._runtime_available())
-        except Exception:
-            available = False
-        return ToolHealth(
+        return self.probe_health(
+            probe=(
+                self._docker_probe
+                if self._docker_probe is not None
+                else self._runtime_available
+            ),
+            success_message="container runtime available",
+            failure_message="container runtime unavailable",
             tool_ref=ToolRef(tool_id=self.tool_id, version="1.0.0"),
-            available=available,
-            message="container runtime available" if available else "container runtime unavailable",
         )
 
     def prepare(self, invocation: ToolInvocation) -> ExecutionRequest:

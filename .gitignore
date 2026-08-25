@@ -9,7 +9,6 @@ __pycache__/
 .coverage
 htmlcov/
 .uv-cache/
-.worktrees/
 
 # Local configuration and credentials
 .env
@@ -38,5 +37,10 @@ dist/
 *.egg-info/
 .idea/
 .vscode/
+.claude/settings.local.json
+frontend/node_modules/
+cookies.txt
+server_output.txt
+server_monitor_*.log
 Thumbs.db
 .DS_Store

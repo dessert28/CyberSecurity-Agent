@@ -4,17 +4,10 @@ from __future__ import annotations
 
 from enum import Enum
 from time import perf_counter
-from typing import Literal
-from uuid import UUID
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, SecretStr, field_validator
 
-from cyber_agent.model_gateway.io_trace import (
-    ModelIoTrace,
-    ModelIoTraceStore,
-    ModelIoTraceSummary,
-)
-from cyber_agent.task_packs import TaskPackCatalog
 from cyber_agent.tools import HealthState, RegistryError, ToolRegistry
 from cyber_agent.verification import VerifierRegistry, VerifierRegistryError
 from cyber_agent.workbench.capabilities import ModelCapabilityService
@@ -26,6 +19,9 @@ from cyber_agent.workbench.schemas import (
     WorkbenchMode,
     WorkbenchModel,
 )
+
+if TYPE_CHECKING:
+    from cyber_agent.task_packs import TaskPackCatalog
 
 _ADMIN_PROFILE_NAME = "Competition primary model"
 
@@ -119,14 +115,6 @@ class AdminHealthResponse(WorkbenchModel):
     checks: tuple[AdminHealthCheck, ...]
 
 
-class AdminModelTraceList(WorkbenchModel):
-    traces: tuple[ModelIoTraceSummary, ...]
-
-
-class AdminModelTraceClearResult(WorkbenchModel):
-    cleared: int = Field(ge=0)
-
-
 _PROVIDER_OPTIONS = (
     AdminProviderOption(value=ProviderType.DEEPSEEK, label="DeepSeek"),
     AdminProviderOption(value=ProviderType.KIMI, label="Kimi"),
@@ -149,14 +137,12 @@ class AdminConsoleService:
         task_packs: TaskPackCatalog | None = None,
         verifier_registry: VerifierRegistry | None = None,
         tool_registry: ToolRegistry | None = None,
-        trace_store: ModelIoTraceStore | None = None,
     ) -> None:
         self._profiles = profiles
         self._capabilities = capabilities
         self._task_packs = task_packs
         self._verifier_registry = verifier_registry
         self._tool_registry = tool_registry
-        self._trace_store = trace_store
 
     def providers(self) -> AdminProviderCatalog:
         return AdminProviderCatalog(providers=_PROVIDER_OPTIONS)
@@ -229,38 +215,6 @@ class AdminConsoleService:
                 status_code=409,
             )
         started = perf_counter()
-        result = await self._capabilities.check_connection(selected.profile_id)
-        latency_ms = max(0, int((perf_counter() - started) * 1_000))
-        return AdminConnectionTestResult(
-            status="ok" if result.passed else "error",
-            success=result.passed,
-            code=result.code,
-            message=result.message,
-            api_accessible=result.passed,
-            structured_output_detected=False,
-            latency_ms=latency_ms,
-            model=selected.model_id,
-            model_name=selected.model_id,
-            active=selected.active,
-        )
-
-    async def verify_structured_output(self) -> AdminConnectionTestResult:
-        """Run the formal capability probe and activate a passing model profile."""
-
-        selected = self._selected_profile_view()
-        if selected is None:
-            raise AdminConsoleError(
-                "MODEL_CONFIGURATION_MISSING",
-                "Save a model configuration before testing the connection.",
-                status_code=409,
-            )
-        if not selected.credential_present:
-            raise AdminConsoleError(
-                "MODEL_CREDENTIAL_MISSING",
-                "Save an API credential before testing the connection.",
-                status_code=409,
-            )
-        started = perf_counter()
         result = await self._capabilities.check_model(selected.profile_id)
         latency_ms = max(0, int((perf_counter() - started) * 1_000))
         active = result.active
@@ -293,32 +247,6 @@ class AdminConsoleService:
         return AdminHealthResponse(
             overall_ready=all(item.state is AdminHealthState.READY for item in checks),
             checks=checks,
-        )
-
-    def model_traces(self) -> AdminModelTraceList:
-        return AdminModelTraceList(
-            traces=self._trace_store.snapshot() if self._trace_store is not None else ()
-        )
-
-    def model_trace(self, trace_id: UUID) -> ModelIoTrace:
-        if self._trace_store is None:
-            raise AdminConsoleError(
-                "MODEL_TRACE_NOT_FOUND",
-                "The model I/O trace was not found.",
-                status_code=404,
-            )
-        try:
-            return self._trace_store.get(trace_id)
-        except KeyError as exc:
-            raise AdminConsoleError(
-                "MODEL_TRACE_NOT_FOUND",
-                "The model I/O trace was not found.",
-                status_code=404,
-            ) from exc
-
-    def clear_model_traces(self) -> AdminModelTraceClearResult:
-        return AdminModelTraceClearResult(
-            cleared=self._trace_store.clear() if self._trace_store is not None else 0
         )
 
     def _selected_profile_view(self):
@@ -403,13 +331,21 @@ class AdminConsoleService:
         if self._task_packs is None or self._verifier_registry is None:
             return self._missing_component("verifiers", "Verifier registry is unavailable.")
         manifests = self._task_packs.list()
-        try:
-            for manifest in manifests:
+        missing: list[str] = []
+        for manifest in manifests:
+            try:
                 self._verifier_registry.resolve(manifest.verifier)
-        except VerifierRegistryError:
-            return self._missing_component(
-                "verifiers",
-                "A competition TaskPack verifier is not registered.",
+            except VerifierRegistryError:
+                missing.append(manifest.verifier)
+        if missing:
+            return AdminHealthCheck(
+                component="verifiers",
+                state=AdminHealthState.UNAVAILABLE,
+                message=(
+                    "Competition TaskPack verifiers are not registered: "
+                    f"{', '.join(sorted(set(missing)))}."
+                ),
+                registered_count=len({item.verifier for item in manifests}),
             )
         return AdminHealthCheck(
             component="verifiers",
@@ -426,25 +362,41 @@ class AdminConsoleService:
             for manifest in self._task_packs.list()
             for tool_id in manifest.required_tools
         }
-        try:
-            statuses = tuple(self._tool_registry.status(tool_id) for tool_id in tool_ids)
-        except RegistryError:
-            return self._missing_component(
-                "tool_registry",
-                "A required competition tool is not registered.",
-            )
-        if any(item.state is not HealthState.HEALTHY for item in statuses):
+        missing: list[str] = []
+        unhealthy: list[str] = []
+        for tool_id in sorted(tool_ids):
+            try:
+                status = self._tool_registry.status(tool_id)
+            except RegistryError:
+                missing.append(tool_id)
+                continue
+            if status.state is not HealthState.HEALTHY:
+                unhealthy.append(tool_id)
+        if missing:
             return AdminHealthCheck(
                 component="tool_registry",
                 state=AdminHealthState.DEGRADED,
-                message="At least one required competition tool is not healthy.",
-                registered_count=len(statuses),
+                message=(
+                    "Required competition tools are not registered: "
+                    f"{', '.join(missing)}."
+                ),
+                registered_count=len(tool_ids),
+            )
+        if unhealthy:
+            return AdminHealthCheck(
+                component="tool_registry",
+                state=AdminHealthState.DEGRADED,
+                message=(
+                    "Required competition tools are not healthy: "
+                    f"{', '.join(unhealthy)}."
+                ),
+                registered_count=len(tool_ids),
             )
         return AdminHealthCheck(
             component="tool_registry",
             state=AdminHealthState.READY,
             message="All required competition tools passed their health checks.",
-            registered_count=len(statuses),
+            registered_count=len(tool_ids),
         )
 
     @staticmethod
@@ -463,8 +415,6 @@ __all__ = [
     "AdminHealthCheck",
     "AdminHealthResponse",
     "AdminHealthState",
-    "AdminModelTraceClearResult",
-    "AdminModelTraceList",
     "AdminModelConfigurationRequest",
     "AdminModelConfigurationView",
     "AdminProviderOption",

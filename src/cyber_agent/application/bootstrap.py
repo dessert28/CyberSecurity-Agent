@@ -16,9 +16,8 @@ from cyber_agent.contracts.ports import (
     PlannerPort,
     ToolPlugin,
 )
-from cyber_agent.task_packs import build_competition_task_pack_catalog
-from cyber_agent.task_packs.source_audit import SOURCE_AUDIT_VERIFIER_ID
-from cyber_agent.task_packs.web_idor import WEB_IDOR_VERIFIER_ID
+from cyber_agent.task_packs.source_audit.manifest import SOURCE_AUDIT_VERIFIER_ID
+from cyber_agent.task_packs.web_idor.manifest import WEB_IDOR_VERIFIER_ID
 from cyber_agent.tools import (
     HttpRequestPlugin,
     HypothesisValidatePlugin,
@@ -43,6 +42,7 @@ async def bootstrap_competition_service(
     policy_gate: PolicyGate | None = None,
 ) -> CompetitionRunService:
     """Register the explicit competition components and return the run service."""
+    from cyber_agent.task_packs import build_competition_task_pack_catalog
 
     availability = runtime_available or (lambda: False)
     selected_plugins = tuple(plugins) if plugins is not None else (

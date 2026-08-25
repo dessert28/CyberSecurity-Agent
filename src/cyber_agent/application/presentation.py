@@ -41,11 +41,11 @@ from cyber_agent.reporting import (
     ReportProviderPort,
     ReportStatus,
 )
-from cyber_agent.task_packs.source_audit import (
+from cyber_agent.task_packs.source_audit.manifest import (
     SOURCE_AUDIT_REPORT_TEMPLATE,
     SOURCE_AUDIT_TASK_PACK_ID,
 )
-from cyber_agent.task_packs.web_idor import (
+from cyber_agent.task_packs.web_idor.manifest import (
     WEB_IDOR_REPORT_TEMPLATE,
     WEB_IDOR_TASK_PACK_ID,
 )

@@ -12,6 +12,7 @@ from cyber_agent.workbench.schemas import (
     ReadinessState,
     RuntimeReadinessResponse,
     TaskPackReadiness,
+    ToolReadinessView,
 )
 
 
@@ -164,3 +165,54 @@ def test_response_model_rejects_unknown_internal_fields() -> None:
 
 def test_workbench_package_exports_the_stable_readiness_contract() -> None:
     assert ExportedReadinessState is ReadinessState
+
+
+def test_detail_probe_populates_taskpack_report_and_unknown_id_is_disabled() -> None:
+    detail = TaskPackReadiness(
+        task_pack_id=WEB_TASKPACK,
+        state=ReadinessState.EXECUTOR_NOT_READY,
+        reason_codes=(ReadinessState.EXECUTOR_NOT_READY,),
+        required_tools=("web.http_request",),
+        tool_states=(
+            ToolReadinessView(
+                tool_id="web.http_request",
+                state="unhealthy",
+                healthy=False,
+                message="container runtime unavailable",
+            ),
+        ),
+        model_capability_ready=True,
+        detail="依赖工具未就绪：web.http_request",
+    )
+    service = RuntimeReadinessService(
+        model_probe=_model_ready,
+        core_probe=lambda: ReadinessState.READY,
+        taskpack_ids=(WEB_TASKPACK, SOURCE_TASKPACK),
+        taskpack_probe=lambda task_pack_id: (
+            ReadinessState.EXECUTOR_NOT_READY
+            if task_pack_id == WEB_TASKPACK
+            else ReadinessState.READY
+        ),
+        taskpack_detail_probe=lambda task_pack_id: (
+            detail
+            if task_pack_id == WEB_TASKPACK
+            else TaskPackReadiness(
+                task_pack_id=task_pack_id,
+                state=ReadinessState.READY,
+                reason_codes=(),
+            )
+        ),
+        clock=lambda: NOW,
+    )
+
+    result = service.status()
+    by_id = {item.task_pack_id: item for item in result.taskpacks}
+    assert by_id[WEB_TASKPACK].detail == detail.detail
+    assert by_id[WEB_TASKPACK].tool_states == detail.tool_states
+    assert by_id[WEB_TASKPACK].model_capability_ready is True
+    assert by_id[SOURCE_TASKPACK].state is ReadinessState.READY
+
+    unknown = service.detail("unknown.pack")
+    assert unknown.state is ReadinessState.TASKPACK_DISABLED
+    assert unknown.reason_codes == (ReadinessState.TASKPACK_DISABLED,)
+    assert unknown.detail is not None
